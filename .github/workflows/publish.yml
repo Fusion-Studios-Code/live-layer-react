@@ -1,0 +1,85 @@
+name: Build & Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run build
+
+      - name: Verify dist output
+        run: |
+          test -f dist/index.js   || (echo "Missing dist/index.js"   && exit 1)
+          test -f dist/index.mjs  || (echo "Missing dist/index.mjs"  && exit 1)
+          test -f dist/index.d.ts || (echo "Missing dist/index.d.ts" && exit 1)
+          test -f dist/styles.css || (echo "Missing dist/styles.css" && exit 1)
+
+      - name: Upload dist artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  # OIDC Trusted Publishing — works because this repo is PUBLIC.
+  # Token-less auth + signed provenance attestation tying every
+  # publish to a specific repo + workflow + commit. Set up the
+  # trusted publisher mapping on npmjs.com first:
+  #   package settings → Trusted Publisher → Add
+  #   repo: Fusion-Studios-Code/live-layer-react
+  #   workflow: publish.yml
+  #
+  # @livelayer/sdk dependency: this package depends on a published
+  # version of @livelayer/sdk (^0.7.6+). When the SDK API changes,
+  # bump the dependency range in package.json — publish SDK first,
+  # then bump this package and tag.
+  publish-npm:
+    name: Publish to npm
+    needs: build-test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      # OIDC Trusted Publishing landed in npm 11.5.1.  Node 20 ships
+      # with npm 10, so upgrade explicitly before publish.
+      - name: Upgrade npm
+        run: npm install -g npm@latest && npm --version
+
+      - name: Download dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # --ignore-scripts skips prepublishOnly (it would re-run
+      # `vite build` and need devDeps installed); the artifact we
+      # just downloaded is the canonical built output.
+      - name: Publish @livelayer/react
+        run: npm publish --provenance --access public --ignore-scripts

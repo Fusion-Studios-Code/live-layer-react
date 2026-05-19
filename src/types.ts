@@ -1,0 +1,147 @@
+// Shared public types for @livelayer/react. Exported from index.ts.
+
+export type WidgetPosition =
+  | "top-left"
+  | "top-right"
+  | "bottom-left"
+  | "bottom-right"
+  | "custom";
+
+export type DisplayMode = "hidden" | "minimized" | "expanded";
+
+/**
+ * Agent commands streamed over the LiveKit data channel. The base package
+ * recognizes universal types (agent_state, avatar_active, etc.) and forwards
+ * everything else to the consumer's `onAgentCommand` callback.
+ *
+ * This is an open union — unknown future command types still include `type`.
+ */
+export interface AgentCommand {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface AgentEventDetail {
+  eventName: string;
+  data: Record<string, unknown>;
+}
+
+export interface TeamMember {
+  id: string;
+  name: string;
+  role?: string;
+  avatarImageUrl?: string;
+  previewVideoUrl?: string;
+  /**
+   * Per-member agent override. When the user switches to this member the
+   * widget reconnects with this agentId. If omitted, uses the top-level
+   * agentId prop (single-agent team).
+   */
+  agentId?: string;
+}
+
+export interface BrandingConfig {
+  logoUrl?: string;
+  productName?: string;
+  primaryColor?: string;
+  accentColor?: string;
+  backgroundColor?: string;
+  textColor?: string;
+}
+
+// ── Route patterns (showOn / hideOn) ─────────────────────────────────────
+
+/**
+ * Pattern matched against the current pathname to decide if the widget
+ * renders.
+ *
+ * - `string` — exact match OR glob with `*` (one segment) and `**` (any depth)
+ * - `RegExp` — full regex flexibility
+ * - function — fully custom predicate
+ *
+ * Glob examples:
+ *   "/"               only the home route
+ *   "/admin/X"        /admin/foo but NOT /admin/foo/bar       (X = single star)
+ *   "/admin/XX"       /admin and any descendant               (XX = double star)
+ *   "/blog/X/comments" /blog/x/comments but not deeper paths   (X = single star)
+ */
+export type RoutePattern = string | RegExp | ((pathname: string) => boolean);
+
+// ── Page context (extractPageContext) ────────────────────────────────────
+
+/**
+ * Snapshot of what the user is currently looking at, sent to the agent in
+ * response to a `request_page_context` command.
+ *
+ * Form values, password inputs, and elements marked `data-ll-private="true"`
+ * are NEVER included. See README → Privacy.
+ */
+export interface PageContext {
+  /** Full URL at the moment the snapshot was taken. */
+  url: string;
+  /** document.title at snapshot time. */
+  title: string;
+  /** Pathname only (no host, no query, no hash). */
+  pathname: string;
+  /** Author-curated regions via <LiveLayerRegion> — agent should prefer these. */
+  regions: Array<{ id: string; intent?: string; text: string }>;
+  /** Visible content fallback — auto-extracted text from headings/paragraphs. */
+  visibleText: string;
+  /** Anchor hrefs visible in viewport, top-to-bottom, max 20. */
+  visibleLinks: Array<{ href: string; text: string }>;
+  /** Form fields visible in viewport — labels and types only, never values. */
+  visibleFields: Array<{ label: string; type: string }>;
+  /**
+   * Every <form> on the page is auto-discovered (0.12.0). The agent
+   * uses these entries to call `fill_form`, `submit_form`, or
+   * `collect_from_page`. Values NEVER included. Forms opted out via
+   * `data-ll-skip` or inside a `data-ll-private` subtree are absent.
+   */
+  forms: Array<{
+    id: string;
+    intent?: string;
+    fields: Array<{
+      name: string;
+      label: string;
+      type: string;
+      /** Whether the field is required (HTML5 `required` attribute). */
+      required?: boolean;
+      /** Choices for <select> fields. Capped at 20 per field. */
+      options?: Array<{ value: string; label: string }>;
+      /** Live HTML5 validation error (omitted when field is valid). */
+      validationMessage?: string;
+    }>;
+  }>;
+  /** Free-form metadata bag from the consumer's pageContextExtras prop. */
+  extras?: Record<string, unknown>;
+}
+
+// ── Capabilities (0.4.0) ─────────────────────────────────────────────────
+
+/**
+ * What the agent's data-channel commands are allowed to do. Pass to
+ * `<AvatarWidget capabilities={[...]} />` to restrict.
+ *
+ * Mapping:
+ *   "navigate"     → navigate command
+ *   "scroll"       → scroll_to + scroll_page commands
+ *   "click"        → click command
+ *   "fill_forms"   → fill_form + focus_field commands
+ *   "submit_forms" → submit_form command
+ *   "read_page"    → request_page_context + request_routes commands
+ *
+ * Default (undefined): everything enabled (matches 0.3.x behavior).
+ */
+export type AgentCapability =
+  | "navigate"
+  | "scroll"
+  | "click"
+  | "fill_forms"
+  | "submit_forms"
+  | "read_page"
+  /**
+   * 0.11.0 — LiveKit Agent Tasks structured collection (page-form,
+   * agent-declared field list, slide form). The detailed result types
+   * live in `./hooks/useCollect` to keep co-located with the consumer.
+   */
+  | "collect_data";
