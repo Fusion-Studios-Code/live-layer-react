@@ -331,21 +331,34 @@ All props are optional except `agentId`.
 
 Renders a wrapper element with `data-ll-region` + `data-ll-intent` that the page-context extractor prioritizes.
 
-### `<LiveLayerForm>` + `<LiveLayerField>` (form primitives, 0.4.0)
+### Forms (0.12.0 — no wrappers, just plain HTML)
 
 ```tsx
-<LiveLayerForm id="signup" intent="create account" onSubmit={handleSubmit}>
-  <LiveLayerField name="email" label="Email" type="email" />
-  <LiveLayerField name="bio" as="textarea" label="Bio" />
-  <LiveLayerField name="role" as="select" label="Role">
-    <option value="dev">Developer</option>
-    <option value="pm">PM</option>
-  </LiveLayerField>
+<form onSubmit={handleSubmit}>
+  <label>Email <input name="email" type="email" required /></label>
+  <label>Bio <textarea name="bio" /></label>
+  <label>
+    Role
+    <select name="role">
+      <option value="dev">Developer</option>
+      <option value="pm">PM</option>
+    </select>
+  </label>
   <button type="submit">Sign up</button>
-</LiveLayerForm>
+</form>
 ```
 
-Equivalent to raw HTML with `data-ll-form` + `data-ll-field` attributes. Untagged forms remain invisible to the agent.
+Every `<form>` is auto-discovered. The agent infers labels from the
+wrapping `<label>` / `aria-label` / `placeholder`, infers kinds from
+the input `type=`, and can either fill in one shot (`fill_form`) or
+walk the visitor through it conversationally (`collect_from_page`).
+
+**Opt out** with `data-ll-skip` on a form or `data-ll-private` on an
+input. Browser-native private fields (`type="password"`, `autocomplete="cc-*"`,
+`autocomplete="off"`) are always excluded.
+
+See the *Structured data collection* section above for `onCollect` /
+`useCollect`.
 
 ### Hooks (power users)
 
