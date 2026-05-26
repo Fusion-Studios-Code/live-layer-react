@@ -107,6 +107,34 @@ export type {
   AgentConfig,
 } from "@livelayer/sdk";
 
+// v0.13.0 — manifest field registration (paired with @livelayer/sdk
+// v0.8.0). Use when the SDK's auto-discovery can't see your fields —
+// controlled inputs that don't fire native `input` events, fields not
+// in the DOM yet, headless combobox values, etc.
+//
+//   useRegisterFields(fields)    — declarative; re-registers on change
+//   <FieldProvider fields={...}> — JSX-style equivalent
+//   registerFields(fields)       — imperative; re-exported from the SDK
+//   setFieldValue(id, value)     — patch a single value; from the SDK
+//
+// Programmatic registrations WIN on id conflict with auto-discovered
+// DOM fields, so this is the right escape hatch for "the agent keeps
+// seeing my React state wrong."
+export { useRegisterFields } from "./hooks/useRegisterFields";
+export { FieldProvider } from "./components/FieldProvider";
+export type { FieldProviderProps } from "./components/FieldProvider";
+export {
+  registerFields,
+  setFieldValue,
+  clearFieldRegistry,
+  getRegisteredFields,
+} from "@livelayer/sdk";
+export type {
+  FieldManifest,
+  FieldKind,
+  FieldOption,
+} from "@livelayer/sdk";
+
 // Hooks — exposed for power users who want to build custom widget chrome
 // around the same underlying primitives.
 export { useLiveKitSession } from "./hooks/useLiveKitSession";
