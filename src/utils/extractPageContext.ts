@@ -68,6 +68,15 @@ function isVisibleInViewport(el: Element): boolean {
 }
 
 function fieldLabel(el: HTMLElement): string {
+  // Priority order matters. Semantic labels — explicit <label for>,
+  // aria-label, or a wrapping <label> — are TRUE labels, authored by
+  // the developer to describe the field. Placeholder is an EXAMPLE
+  // value (e.g. "you@company.com") and only describes the field by
+  // accident. We used to short-circuit on placeholder before checking
+  // the wrapping <label>, which mis-labelled fields like
+  // `<label>Your email <input placeholder="you@company.com" /></label>`
+  // as "you@company.com" — the bare-minimum-form case the user
+  // explicitly called out. Fixed in 0.14.0.
   const id = el.getAttribute("id");
   if (id) {
     // CSS.escape isn't available in some test envs (jsdom < 22); fall
@@ -82,11 +91,41 @@ function fieldLabel(el: HTMLElement): string {
   }
   const aria = el.getAttribute("aria-label");
   if (aria) return aria.trim();
+  // Wrapping <label> — semantic, beats placeholder. Strip the input's
+  // own textual presence (e.g. <option> labels inside a wrapped
+  // <select>) by reading the wrapping label's direct text nodes,
+  // not the full textContent which includes child content.
+  const wrapping = el.closest("label");
+  if (wrapping) {
+    // Pull the label text without the input's own contribution.
+    // Walk direct children; concatenate text nodes and labels of
+    // non-form-element children. Far cleaner than the textContent
+    // diff, and immune to selects with many options bleeding into
+    // the label string.
+    const parts: string[] = [];
+    for (const node of Array.from(wrapping.childNodes)) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const t = (node.textContent || "").trim();
+        if (t) parts.push(t);
+      } else if (node instanceof HTMLElement) {
+        // Skip the form control itself (and any form controls).
+        if (
+          node instanceof HTMLInputElement ||
+          node instanceof HTMLTextAreaElement ||
+          node instanceof HTMLSelectElement ||
+          node instanceof HTMLButtonElement
+        ) {
+          continue;
+        }
+        const t = (node.textContent || "").trim();
+        if (t) parts.push(t);
+      }
+    }
+    const direct = parts.join(" ").trim();
+    if (direct) return direct;
+  }
   const placeholder = el.getAttribute("placeholder");
   if (placeholder) return placeholder.trim();
-  // Wrapping <label> case
-  const wrapping = el.closest("label");
-  if (wrapping?.textContent) return wrapping.textContent.trim();
   return "";
 }
 
@@ -374,6 +413,62 @@ export function extractPageContext(
       // Required flag — lets the agent prioritize mandatory fields and
       // treat optional ones as "do you want to add anything?" at the end.
       if ((el as HTMLInputElement).required === true) entry.required = true;
+      // Placeholder — second-best label source (already used by
+      // fieldLabel above when nothing better is available) but the
+      // agent also benefits from the verbatim placeholder text as
+      // an example value. e.g. placeholder="you@company.com" hints
+      // that the field accepts an email, even if `type` is just
+      // "text".
+      const placeholder = el.getAttribute("placeholder");
+      if (placeholder) entry.placeholder = clampString(placeholder.trim(), 100);
+      // Proactive HTML5 constraint surfacing (0.14.0). We DO NOT wait
+      // for the browser to reject a bad fill and surface the
+      // constraint via validationMessage — the agent gets the rules
+      // up front and formats correctly the first time. Each attribute
+      // is only emitted when actually present on the element, so the
+      // PageContext payload stays small for bare-bones forms.
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        // minLength / maxLength are DOM properties (default -1 when
+        // unset on input, -1 on textarea). The HTML attribute is the
+        // ground truth — read the attribute, parse to number, skip
+        // when missing or non-numeric.
+        const minLenAttr = el.getAttribute("minlength");
+        if (minLenAttr !== null) {
+          const n = parseInt(minLenAttr, 10);
+          if (!Number.isNaN(n) && n >= 0) entry.minLength = n;
+        }
+        const maxLenAttr = el.getAttribute("maxlength");
+        if (maxLenAttr !== null) {
+          const n = parseInt(maxLenAttr, 10);
+          if (!Number.isNaN(n) && n >= 0) entry.maxLength = n;
+        }
+      }
+      if (el instanceof HTMLInputElement) {
+        // min / max / step are typed as string in the DOM (they can
+        // be numeric OR ISO date/time depending on input.type, so we
+        // can't safely numeric-parse here — preserve the host's
+        // exact attribute value and let the agent interpret).
+        const minAttr = el.getAttribute("min");
+        if (minAttr !== null) entry.min = clampString(minAttr, 50);
+        const maxAttr = el.getAttribute("max");
+        if (maxAttr !== null) entry.max = clampString(maxAttr, 50);
+        const stepAttr = el.getAttribute("step");
+        if (stepAttr !== null) entry.step = clampString(stepAttr, 20);
+        // Pattern is a JS regex source string. Clamp generously —
+        // realistic patterns are short, anything 200+ chars is a
+        // signal something's off.
+        const patternAttr = el.getAttribute("pattern");
+        if (patternAttr !== null) entry.pattern = clampString(patternAttr, 200);
+        // Autocomplete is the semantic-meaning attribute (email,
+        // given-name, tel, street-address, postal-code, etc.) — when
+        // present, it's strictly more informative than `type` alone.
+        // Don't surface "off" / "cc-*" — isFieldFillable would have
+        // already filtered those, but defensive belt-and-suspenders.
+        const acAttr = (el.getAttribute("autocomplete") || "").toLowerCase();
+        if (acAttr && acAttr !== "off" && !acAttr.startsWith("cc-")) {
+          entry.autocomplete = clampString(acAttr, 50);
+        }
+      }
       // Surface choices for <select> so the agent can offer them.
       // Skipped for native <input> with list= attribute (datalist) — those
       // would require a second querySelector and pages rarely use them.

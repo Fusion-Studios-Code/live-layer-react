@@ -113,6 +113,36 @@ export interface PageContext {
       type: string;
       /** Whether the field is required (HTML5 `required` attribute). */
       required?: boolean;
+      /** Placeholder text. Useful when no <label> is associated. */
+      placeholder?: string;
+      /**
+       * HTML5 constraint hints — surfaced proactively so the agent can
+       * format input correctly the first time instead of learning the
+       * constraint reactively from `validationMessage` after a rejected
+       * fill. All optional; only present when the underlying attribute
+       * was set on the DOM element.
+       *
+       *   minLength / maxLength — string length bounds (text, email,
+       *                            textarea, password, etc.)
+       *   min / max             — numeric / date / time bounds (typed
+       *                            as strings to preserve the host's
+       *                            exact attribute value)
+       *   step                  — numeric / date / time step
+       *   pattern               — regex the value must satisfy
+       *   autocomplete          — semantic hint (e.g. "email",
+       *                            "given-name", "tel", "street-
+       *                            address"). Excluded when its value
+       *                            is "off" or starts with "cc-"
+       *                            (those fields are privacy-filtered
+       *                            entirely upstream).
+       */
+      minLength?: number;
+      maxLength?: number;
+      min?: string;
+      max?: string;
+      step?: string;
+      pattern?: string;
+      autocomplete?: string;
       /** Choices for <select> fields. Capped at 20 per field. */
       options?: Array<{ value: string; label: string }>;
       /** Live HTML5 validation error (omitted when field is valid). */
