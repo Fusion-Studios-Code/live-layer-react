@@ -10,6 +10,19 @@ import {
   type Room,
 } from "livekit-client";
 
+/**
+ * Wrap the published mic's raw `mediaStreamTrack` in a one-track
+ * MediaStream — what Web Audio's createMediaStreamSource expects. The
+ * track is shared with LiveKit's outbound publication; analysing it
+ * doesn't fork audio or cost extra bandwidth, the analyser just taps
+ * the same pipe non-destructively.
+ */
+function trackToStream(track: LocalAudioTrack | null): MediaStream | null {
+  const mst = track?.mediaStreamTrack;
+  if (!mst) return null;
+  return new MediaStream([mst]);
+}
+
 export interface MicrophoneStateHandle {
   isMuted: boolean;
   /** Currently-selected input deviceId (empty string if default / unset). */
@@ -41,6 +54,15 @@ export interface MicrophoneStateHandle {
   teardownMic: () => void;
   /** Clear the error state (e.g. after user clicks Retry). */
   clearError: () => void;
+  /**
+   * 0.15.2: read-only accessor for the published mic as a MediaStream
+   * suitable for Web Audio analysis (the AudioWaveform reads mic
+   * amplitude so it reacts when the VISITOR is talking, not just when
+   * the agent is). Returns null when no mic has been set up. The
+   * stream wraps the same `mediaStreamTrack` LiveKit is already
+   * publishing — non-destructive tap, no bandwidth cost.
+   */
+  getMicStream: () => MediaStream | null;
 }
 
 export function useMicrophoneState(): MicrophoneStateHandle {
@@ -157,6 +179,8 @@ export function useMicrophoneState(): MicrophoneStateHandle {
 
   const clearError = useCallback(() => setMicError(null), []);
 
+  const getMicStream = useCallback(() => trackToStream(trackRef.current), []);
+
   return {
     isMuted,
     activeDeviceId,
@@ -167,5 +191,6 @@ export function useMicrophoneState(): MicrophoneStateHandle {
     switchDevice,
     teardownMic,
     clearError,
+    getMicStream,
   };
 }

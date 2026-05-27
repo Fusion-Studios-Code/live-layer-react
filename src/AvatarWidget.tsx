@@ -1603,9 +1603,35 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   }, [session.videoElement]);
 
   // ── Audio element attachment + autoplay check ────────────────
+  //
+  // 0.15.2: the agent audio element MUST live in the DOM for the
+  // duration of the call. We used to leave it as a detached
+  // <audio> reference held only in React state — desktop browsers
+  // tolerated this and kept playing, but iOS Safari would pause
+  // the track the moment the rendering context changed (e.g. when
+  // the user minimized the widget and ExpandedLayout unmounted).
+  // Visitors reported "the agent stops replying when I minimize."
+  //
+  // Fix: append the audio element to document.body in a styled-hidden
+  // wrapper that survives every layout swap. The visitor sees nothing
+  // change visually; the browser keeps the playback graph alive
+  // because the element is rooted in the DOM the whole time. Same
+  // pattern Twilio / Zoom / Whereby use for their hidden audio sinks.
   useEffect(() => {
     const el = session.audioElement;
     if (!el) return;
+
+    // Persistent DOM anchor for the audio element. Created lazily per
+    // audioElement so a session restart gets a fresh sink (avoids
+    // stale-reference oddities).
+    const sink = document.createElement("div");
+    sink.className = "ll-audio-sink";
+    sink.setAttribute("aria-hidden", "true");
+    sink.style.cssText =
+      "position:absolute;width:0;height:0;overflow:hidden;clip:rect(0 0 0 0);pointer-events:none;";
+    sink.appendChild(el);
+    document.body.appendChild(sink);
+
     audioLevel.attach(el);
 
     // Autoplay policy: if the element can't auto-play, surface the
@@ -1621,6 +1647,15 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
 
     return () => {
       audioLevel.detach();
+      // Pull the audio element out before removing the sink so it
+      // could be re-attached by a future effect if React re-runs
+      // (strict mode double-effect). Then remove the sink itself.
+      if (el.parentNode === sink) {
+        sink.removeChild(el);
+      }
+      if (sink.parentNode === document.body) {
+        document.body.removeChild(sink);
+      }
     };
     // audioLevel is a stable object across renders — attach/detach are
     // memoized inside the hook. Safe to omit from deps.
@@ -1636,10 +1671,19 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     if (session.connectionState !== "connected") return;
     const room = session.getRoom();
     if (!room) return;
-    void mic.setupMic(room).catch(() => {
+    void mic.setupMic(room).then(() => {
+      // 0.15.2: feed the local mic into the shared audio-level analyser
+      // so the waveform reacts when the VISITOR is talking, not only
+      // when the agent is. The mic track is shared with LiveKit's
+      // outbound publication — analysing it is a non-destructive tap,
+      // no extra bandwidth, no second mic acquisition.
+      const stream = mic.getMicStream();
+      if (stream) audioLevel.attachStream(stream, "mic");
+    }).catch(() => {
       // error already stored in mic.micError
     });
     return () => {
+      audioLevel.detachSlot("mic");
       mic.teardownMic();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1,75 +1,113 @@
 // ─── useAudioLevel ────────────────────────────────────────────────────
 //
-// Own one AudioContext + AnalyserNode for the widget's lifetime. Consumers
-// attach a media element (audio or video) and subscribe to level updates.
+// Multi-source audio analyser for the widget. Owns ONE AudioContext +
+// rAF loop for the widget's lifetime. Consumers attach any number of
+// independent audio sources (the agent's <audio> element + the
+// visitor's local mic MediaStream are the two typical ones) and
+// subscribe to a single combined level signal. The combined level is
+// max(allSources) so subscribers see whichever side is currently
+// louder — perfect for a waveform that should react to "whoever is
+// talking" without per-tick decision logic in the renderer.
 //
-//   ┌───────────────┐      ┌───────────────┐      ┌─────────────┐
-//   │ HTMLMedia     │─────►│ MediaElement  │─────►│  Analyser   │─────► destination
-//   │ Element       │      │ SourceNode    │      │  (fft 64)   │
-//   └───────────────┘      └───────────────┘      └─────────────┘
-//                                                        │
-//                                                        │ getByteFreq
-//                                                        │ via rAF loop
-//                                                        ▼
-//                                                  subscribers:
-//                                                    cb(level 0..1)
+//   ┌─────────────────────┐        ┌────────────┐
+//   │ HTMLAudioElement    │───────►│ Analyser A │──┐
+//   │ (agent track)       │        │  fft 64    │  │
+//   └─────────────────────┘        └────────────┘  │
+//                                                  ▼
+//                                            max(level) ──► subscribers
+//                                                  ▲
+//   ┌─────────────────────┐        ┌────────────┐  │
+//   │ MediaStream         │───────►│ Analyser B │──┘
+//   │ (local mic track)   │        │  fft 64    │
+//   └─────────────────────┘        └────────────┘
 //
-// Why this shape:
-//   - One rAF loop regardless of how many components subscribe.
-//   - Subscribers get raw levels directly; they set DOM refs, not React
-//     state. No 60fps React re-renders.
-//   - `attach()` disposes prior source cleanly before creating a new one,
-//     so swapping (agent track → user mic) doesn't leak.
-//   - Full teardown on unmount: rAF cancelled, source + analyser
-//     disconnected, AudioContext closed.
+// Why max() and not sum():
+//   - sum overshoots quickly to 1.0 once both sides are loud, washing
+//     out variation in the bars. max preserves dynamic range for the
+//     louder participant — which is what the eye reads as "who's
+//     talking right now."
+//   - mathematically simple, no compressor / agc, no per-source
+//     calibration needed.
 //
-// Known Web Audio API limit: a single HTMLMediaElement can be the source
-// of ONLY ONE MediaElementAudioSourceNode. If the same element is attached
-// twice (e.g., React strict-mode double effect), the second createMediaElement-
-// Source throws. We catch, warn, and continue — behaviour matches the
-// original AvatarWidget.
+// Each source slot is keyed by purpose ("agent" / "mic") so re-attaching
+// the same source type swaps cleanly without leaving orphan nodes.
+//
+// Known Web Audio API limit: a single HTMLMediaElement can be the
+// source of ONLY ONE MediaElementAudioSourceNode. If the same element
+// is re-attached (e.g. React strict-mode double-effect), the second
+// createMediaElementSource throws. We catch, warn, keep state intact.
+// Same restriction does NOT apply to MediaStreamAudioSourceNode — those
+// can be created multiple times against the same stream.
 
 import { useCallback, useEffect, useRef } from "react";
 
 type LevelSubscriber = (level: number) => void;
 
+/** Slot identifier — each source kind owns one slot, swapping in place. */
+export type AudioLevelSlot = "agent" | "mic";
+
 export interface AudioLevelHandle {
-  /** Attach a media element as the analyser source. Safe to call repeatedly — swaps sources. */
-  attach: (element: HTMLMediaElement) => void;
-  /** Stop the rAF loop and disconnect the current source. Keeps the context alive. */
+  /**
+   * Attach an HTMLMediaElement (the agent's <audio>/<video>) as the
+   * source for the given slot. Safe to call repeatedly — replaces the
+   * prior source for that slot.
+   */
+  attach: (element: HTMLMediaElement, slot?: AudioLevelSlot) => void;
+  /**
+   * Attach a MediaStream (the local mic track) as the source for the
+   * given slot. Safe to call repeatedly — replaces the prior source.
+   */
+  attachStream: (stream: MediaStream, slot?: AudioLevelSlot) => void;
+  /**
+   * Detach ALL slots and stop the rAF loop. Keeps the AudioContext
+   * alive (cheap, reused on next attach).
+   */
   detach: () => void;
-  /** Subscribe to level ticks (0..1). Returns an unsubscribe fn. */
+  /**
+   * Detach a specific slot. Useful when only the mic goes away (e.g.
+   * the visitor toggles mute) but the agent audio should keep driving
+   * the waveform.
+   */
+  detachSlot: (slot: AudioLevelSlot) => void;
+  /** Subscribe to combined level ticks (0..1). Returns an unsubscribe fn. */
   subscribe: (cb: LevelSubscriber) => () => void;
+}
+
+interface SourceEntry {
+  analyser: AnalyserNode;
+  node: AudioNode;
+  /** Reused per-source typed buffer for getByteFrequencyData. */
+  buffer: Uint8Array<ArrayBuffer>;
 }
 
 export function useAudioLevel(): AudioLevelHandle {
   const ctxRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const sourcesRef = useRef<Map<AudioLevelSlot, SourceEntry>>(new Map());
   const rafRef = useRef<number | null>(null);
   const subscribersRef = useRef<Set<LevelSubscriber>>(new Set());
-  const bufferRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
 
   const tick = useCallback(() => {
-    const analyser = analyserRef.current;
-    if (!analyser) {
+    const sources = sourcesRef.current;
+    if (sources.size === 0) {
       rafRef.current = null;
       return;
     }
-    if (!bufferRef.current || bufferRef.current.length !== analyser.frequencyBinCount) {
-      // Cast to the stricter typing TS 5.7+ expects for getByteFrequencyData.
-      bufferRef.current = new Uint8Array(
-        new ArrayBuffer(analyser.frequencyBinCount),
-      );
+    // Compute the per-source RMS-ish level (mean of byte-bin amplitudes
+    // normalized to 0..1), then take the MAX across sources. Single
+    // pass — no allocations beyond the per-source buffer reuse.
+    let maxLevel = 0;
+    for (const { analyser, buffer } of sources.values()) {
+      // fftSize is fixed at 64 at install time so buffer.length always
+      // matches analyser.frequencyBinCount (32). No realloc path needed.
+      analyser.getByteFrequencyData(buffer);
+      let sum = 0;
+      for (let i = 0; i < buffer.length; i++) sum += buffer[i];
+      const level = sum / buffer.length / 255;
+      if (level > maxLevel) maxLevel = level;
     }
-    const data = bufferRef.current;
-    analyser.getByteFrequencyData(data);
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) sum += data[i];
-    const level = sum / data.length / 255;
     for (const cb of subscribersRef.current) {
       try {
-        cb(level);
+        cb(maxLevel);
       } catch (e) {
         console.error("[useAudioLevel] subscriber threw:", e);
       }
@@ -77,50 +115,128 @@ export function useAudioLevel(): AudioLevelHandle {
     rafRef.current = requestAnimationFrame(tick);
   }, []);
 
-  const ensureContext = useCallback(() => {
-    if (ctxRef.current) return;
-    if (typeof window === "undefined" || typeof AudioContext === "undefined") return;
-    const ctx = new AudioContext();
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 64;
-    analyser.connect(ctx.destination);
-    ctxRef.current = ctx;
-    analyserRef.current = analyser;
+  const ensureContext = useCallback((): AudioContext | null => {
+    if (ctxRef.current) return ctxRef.current;
+    if (typeof window === "undefined" || typeof AudioContext === "undefined") {
+      return null;
+    }
+    ctxRef.current = new AudioContext();
+    return ctxRef.current;
   }, []);
 
-  const attach = useCallback(
-    (element: HTMLMediaElement) => {
-      ensureContext();
-      if (!ctxRef.current || !analyserRef.current) return;
+  const ensureLoop = useCallback(() => {
+    if (rafRef.current === null && sourcesRef.current.size > 0) {
+      rafRef.current = requestAnimationFrame(tick);
+    }
+  }, [tick]);
 
-      // Dispose any existing source cleanly before creating a new one.
-      if (sourceRef.current) {
-        try {
-          sourceRef.current.disconnect();
-        } catch {
-          // already disconnected
-        }
-        sourceRef.current = null;
-      }
+  /**
+   * Internal: disconnect + drop the entry for a slot if present. Safe
+   * to call when the slot is empty. Doesn't stop the rAF loop on its
+   * own — caller stops it if size hits zero.
+   */
+  const dropSlot = useCallback((slot: AudioLevelSlot) => {
+    const existing = sourcesRef.current.get(slot);
+    if (!existing) return;
+    try {
+      existing.node.disconnect();
+    } catch {
+      // already disconnected
+    }
+    try {
+      existing.analyser.disconnect();
+    } catch {
+      // already disconnected
+    }
+    sourcesRef.current.delete(slot);
+  }, []);
 
+  const installSource = useCallback(
+    (slot: AudioLevelSlot, makeNode: (ctx: AudioContext) => AudioNode | null) => {
+      const ctx = ensureContext();
+      if (!ctx) return;
+
+      dropSlot(slot);
+
+      const node = makeNode(ctx);
+      if (!node) return;
+
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 64;
       try {
-        const source = ctxRef.current.createMediaElementSource(element);
-        source.connect(analyserRef.current);
-        sourceRef.current = source;
+        node.connect(analyser);
       } catch (e) {
-        // An HTMLMediaElement may be used as source only once. If the caller
-        // re-attaches an element that was previously a source (even via a
-        // prior hook instance), this throws. We log and leave state intact
-        // so the rest of the widget still works.
-        console.warn("[useAudioLevel] createMediaElementSource failed:", e);
+        console.warn("[useAudioLevel] connect failed for slot", slot, e);
         return;
       }
+      // IMPORTANT: do NOT connect the analyser to ctx.destination. The
+      // browser already plays the agent audio via its own <audio>
+      // element, and the local mic is published via LiveKit — connecting
+      // to destination here would either (a) double-play the agent
+      // audio at 2× volume or (b) cause the mic to monitor back to the
+      // visitor's speakers (feedback loop). The analyser still receives
+      // frames from the source; destination isn't required for that.
 
-      if (rafRef.current === null) {
-        rafRef.current = requestAnimationFrame(tick);
+      sourcesRef.current.set(slot, {
+        analyser,
+        node,
+        buffer: new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount)),
+      });
+      ensureLoop();
+    },
+    [dropSlot, ensureContext, ensureLoop],
+  );
+
+  const attach = useCallback(
+    (element: HTMLMediaElement, slot: AudioLevelSlot = "agent") => {
+      installSource(slot, (ctx) => {
+        try {
+          return ctx.createMediaElementSource(element);
+        } catch (e) {
+          // An HTMLMediaElement can be the source of ONLY ONE
+          // MediaElementAudioSourceNode. If the caller re-attaches an
+          // element that was previously a source (even via a prior
+          // hook instance), this throws. Log and continue — the rest
+          // of the widget still works.
+          console.warn(
+            "[useAudioLevel] createMediaElementSource failed for slot",
+            slot,
+            e,
+          );
+          return null;
+        }
+      });
+    },
+    [installSource],
+  );
+
+  const attachStream = useCallback(
+    (stream: MediaStream, slot: AudioLevelSlot = "mic") => {
+      installSource(slot, (ctx) => {
+        try {
+          return ctx.createMediaStreamSource(stream);
+        } catch (e) {
+          console.warn(
+            "[useAudioLevel] createMediaStreamSource failed for slot",
+            slot,
+            e,
+          );
+          return null;
+        }
+      });
+    },
+    [installSource],
+  );
+
+  const detachSlot = useCallback(
+    (slot: AudioLevelSlot) => {
+      dropSlot(slot);
+      if (sourcesRef.current.size === 0 && rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
     },
-    [ensureContext, tick],
+    [dropSlot],
   );
 
   const detach = useCallback(() => {
@@ -128,15 +244,10 @@ export function useAudioLevel(): AudioLevelHandle {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
-    if (sourceRef.current) {
-      try {
-        sourceRef.current.disconnect();
-      } catch {
-        // already disconnected
-      }
-      sourceRef.current = null;
+    for (const slot of Array.from(sourcesRef.current.keys())) {
+      dropSlot(slot);
     }
-  }, []);
+  }, [dropSlot]);
 
   const subscribe = useCallback((cb: LevelSubscriber) => {
     subscribersRef.current.add(cb);
@@ -149,14 +260,6 @@ export function useAudioLevel(): AudioLevelHandle {
   useEffect(() => {
     return () => {
       detach();
-      if (analyserRef.current) {
-        try {
-          analyserRef.current.disconnect();
-        } catch {
-          // ignore
-        }
-        analyserRef.current = null;
-      }
       if (ctxRef.current) {
         try {
           void ctxRef.current.close();
@@ -166,9 +269,8 @@ export function useAudioLevel(): AudioLevelHandle {
         ctxRef.current = null;
       }
       subscribersRef.current.clear();
-      bufferRef.current = null;
     };
   }, [detach]);
 
-  return { attach, detach, subscribe };
+  return { attach, attachStream, detach, detachSlot, subscribe };
 }
