@@ -678,22 +678,29 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     showMinimizeProp ?? (isEmbedded ? false : true);
   const showClose = showCloseProp ?? (isEmbedded ? false : true);
 
-  // ── Mobile auto-compact (0.18.0) ─────────────────────────────
+  // ── Mobile auto-compact (0.18.1) ─────────────────────────────
   // The thumbnail-sized mobile WIDGET surface (clamp(140,38vw,180) ×
-  // 9:16 aspect) is too small to fit the full chrome: topbar pills
-  // (agent name / language / state), 4-button media toolbar, plus a
-  // captions strip don't fit at ~150px wide. The LiveLayer landing
-  // page already proved out the right visual treatment — the
-  // ExperienceForkCard mounts the widget with `chromeless`,
-  // `compactControls`, and `showMinimize={false}` inside a 160×230
-  // EMBEDDED container, producing the compact face-with-three-buttons
-  // form factor the user keeps asking for.
+  // 9:16 aspect) is too small to fit the full chrome — agent-name /
+  // language / state topbar pills and the 4-button media toolbar
+  // would overcrowd 150px of width.
   //
-  // To get that "just works" experience in WIDGET mode on mobile,
-  // both flags default to true on mobile when the consumer hasn't
-  // explicitly opted out. Desktop and explicit consumer overrides
-  // are untouched.
-  const effectiveChromeless = chromeless || (!isEmbedded && isMobile);
+  // The package already has the right compact treatment: when
+  // `compactControls` is true the layout hides the topbar pills,
+  // hides the full toolbar, shows a small "ll-compact-status" pill
+  // in the top-left ("listening" / "speaking" / "thinking"), and
+  // renders <CompactToolbar /> at the bottom — the 3-button row
+  // (mic / overflow / hangup) the user sees in the LiveLayer
+  // landing demo and explicitly asked us to match.
+  //
+  // 0.18.0 also auto-enabled `chromeless`, which seemed right but
+  // turned out to block CompactToolbar from rendering — that
+  // component's gate is `!chromeless && compactControls`, so with
+  // both flags true the 3 buttons disappeared entirely (visitor
+  // reported "the controls are missing"). chromeless is for the
+  // EMBEDDED case where the host card owns chrome AND there's
+  // nothing the visitor needs to drive directly. For floating
+  // WIDGET mode the visitor MUST be able to hang up, mute, etc.
+  // compactControls alone does the right thing.
   const effectiveCompactControls =
     compactControls || (!isEmbedded && isMobile);
 
@@ -1968,7 +1975,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           allowTyping={allowTyping}
           showMinimize={isMobile && !isEmbedded ? false : showMinimize}
           showClose={showClose}
-          chromeless={effectiveChromeless}
+          chromeless={chromeless}
           compactControls={effectiveCompactControls}
           transforming={transforming}
           transformingLabel={transformingLabel}
