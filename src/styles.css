@@ -589,22 +589,25 @@
 }
 
 .ll-expanded--mobile {
-  /* Card layout — same shape as desktop, sized to fit comfortably in
-     a phone viewport with breathing room on every side. The min()
-     calls bound the card on small phones (iPhone SE at 320×568 still
-     gets a usable card with ~32px margins) while keeping a generous
-     default on modern devices (iPhone 16 Pro at 402×874 gets the
-     full 380×540 card). dvh accounts for the iOS dynamic toolbar so
-     the card never gets clipped behind the URL bar or home indicator.
+  /* Mobile expanded is a thumbnail PiP — 9:16 portrait, ~150px wide.
+     The visitor's website is the primary surface; the widget is a
+     persistent reachable affordance, not the focus. Sized so it fits
+     comfortably alongside content without blocking it.
 
-     Was previously `100vw × 80dvh` edge-to-edge bottom sheet — covered
-     ~60% of the screen in the idle state before the visitor had even
-     tapped anything. The expanded layout is now position-aware on
-     mobile too (see .ll-widget--mobile.ll-widget--expanded above) so
-     the position prop anchors the card to the chosen corner. */
-  width: min(380px, calc(100vw - 32px));
-  height: min(540px, calc(100dvh - 32px));
-  border-radius: 20px;
+     Evolution:
+       v0:    100vw × 80dvh edge-to-edge sheet → blocked 60% of screen
+       v0.16: 380 × 540 card → marginally smaller, still ~90% of phone width
+       v0.17: 150 × 267 (9:16) thumbnail → properly out-of-the-way
+
+     The clamp lets the card scale slightly with viewport — tiny phones
+     (320px wide) get 140px, normal phones (393-430px) stay at the
+     150px sweet spot, larger phones / foldables (500px+) can grow to
+     180px. aspect-ratio derives height from width so the 9:16 portrait
+     framing stays exact regardless of where in the clamp range the
+     viewport lands. */
+  width: clamp(140px, 38vw, 180px);
+  aspect-ratio: 9 / 16;
+  border-radius: 16px;
 }
 
 /* ── Background layers ───────────────────────────────────────── */
@@ -1548,9 +1551,13 @@
 }
 
 .ll-expanded--mobile .ll-expanded__pip {
-  right: 10px;
-  width: 96px;
-  height: 72px;
+  /* Scaled down to fit the 0.17.0 mobile thumbnail card (~150px
+     wide). A 96px PiP in a 150px card would cover nearly the entire
+     surface during a call — defeats the point of the PiP. 48×36 is
+     readable as "your camera preview" at the card scale. */
+  right: 8px;
+  width: 48px;
+  height: 36px;
 }
 
 /* ── Error boundary fallback ─────────────────────────────────── */
