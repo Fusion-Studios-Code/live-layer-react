@@ -678,6 +678,25 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     showMinimizeProp ?? (isEmbedded ? false : true);
   const showClose = showCloseProp ?? (isEmbedded ? false : true);
 
+  // ── Mobile auto-compact (0.18.0) ─────────────────────────────
+  // The thumbnail-sized mobile WIDGET surface (clamp(140,38vw,180) ×
+  // 9:16 aspect) is too small to fit the full chrome: topbar pills
+  // (agent name / language / state), 4-button media toolbar, plus a
+  // captions strip don't fit at ~150px wide. The LiveLayer landing
+  // page already proved out the right visual treatment — the
+  // ExperienceForkCard mounts the widget with `chromeless`,
+  // `compactControls`, and `showMinimize={false}` inside a 160×230
+  // EMBEDDED container, producing the compact face-with-three-buttons
+  // form factor the user keeps asking for.
+  //
+  // To get that "just works" experience in WIDGET mode on mobile,
+  // both flags default to true on mobile when the consumer hasn't
+  // explicitly opted out. Desktop and explicit consumer overrides
+  // are untouched.
+  const effectiveChromeless = chromeless || (!isEmbedded && isMobile);
+  const effectiveCompactControls =
+    compactControls || (!isEmbedded && isMobile);
+
   // ── Responsive ───────────────────────────────────────────────
   // isMobile is declared earlier in the display-mode block — it's
   // referenced by layout components further down for waveform sizing,
@@ -1947,10 +1966,10 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           allowCamera={allowCamera}
           allowScreenShare={allowScreenShare}
           allowTyping={allowTyping}
-          showMinimize={showMinimize}
+          showMinimize={isMobile && !isEmbedded ? false : showMinimize}
           showClose={showClose}
-          chromeless={chromeless}
-          compactControls={compactControls}
+          chromeless={effectiveChromeless}
+          compactControls={effectiveCompactControls}
           transforming={transforming}
           transformingLabel={transformingLabel}
           languageMenuOpen={languageMenuOpen}

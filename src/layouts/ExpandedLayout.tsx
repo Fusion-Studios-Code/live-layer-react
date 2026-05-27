@@ -573,29 +573,35 @@ export const ExpandedLayout: FC<Props> = ({
           )}
         </>
       ) : (
-        // Idle-state header with Live Layer product name + minimize/close.
-        // Hidden in compact mode — on a 140×210 docked slot the brand pill
-        // and 40px buttons crowded out the central "Start video call"
-        // affordance. The user can dismiss by scrolling past the slot.
-        !compactControls && (
+        // Idle-state header. In compactControls mode (mobile WIDGET +
+        // every EMBEDDED card) we keep the header mounted but strip the
+        // brand pill and the minimize button — the surface is too small
+        // for either, AND there's nothing meaningful to minimize FROM
+        // before a session starts. The X close button stays so visitors
+        // can always dismiss; making the whole header disappear (the
+        // pre-0.18.0 behavior) left users no way out short of scrolling
+        // the page itself.
+        (
           <div className="ll-expanded__header ll-expanded__header--idle">
-            {showLiveLayerMark ? (
-              <a
-                className="ll-expanded__brand ll-expanded__brand--link"
-                href="https://livelayer.studio?utm_source=widget&utm_medium=brand-badge"
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="Powered by LiveLayer — opens livelayer.studio in a new tab"
-                title="Powered by LiveLayer — visit livelayer.studio"
-              >
-                <LiveLayerMarkIcon size={14} className="ll-expanded__brand-mark" />
-                <span>{productName}</span>
-              </a>
-            ) : (
-              <span className="ll-expanded__brand">{productName}</span>
+            {!compactControls && (
+              showLiveLayerMark ? (
+                <a
+                  className="ll-expanded__brand ll-expanded__brand--link"
+                  href="https://livelayer.studio?utm_source=widget&utm_medium=brand-badge"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Powered by LiveLayer — opens livelayer.studio in a new tab"
+                  title="Powered by LiveLayer — visit livelayer.studio"
+                >
+                  <LiveLayerMarkIcon size={14} className="ll-expanded__brand-mark" />
+                  <span>{productName}</span>
+                </a>
+              ) : (
+                <span className="ll-expanded__brand">{productName}</span>
+              )
             )}
             <div className="ll-expanded__header-actions">
-              {showMinimize !== false && (
+              {!compactControls && showMinimize !== false && (
                 <button
                   type="button"
                   className="ll-hbtn ll-hbtn--ghost"
