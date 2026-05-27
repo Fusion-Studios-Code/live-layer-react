@@ -22,6 +22,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FC, typ
 import { createPortal } from "react-dom";
 import type { AgentState, ConnectionState, TranscriptEntry } from "@livelayer/sdk";
 import { AvatarImage } from "../components/AvatarImage";
+import { LiveLayerMarkIcon } from "../components/icons/LiveLayerMarkIcon";
 import type { BrandingConfig, TeamMember, WidgetPosition } from "../types";
 import { CompactToolbar } from "./CompactToolbar";
 
@@ -311,6 +312,14 @@ export const ExpandedLayout: FC<Props> = ({
   );
 
   const productName = branding.productName || "Live Layer";
+  // "Powered by LiveLayer" mark + link to livelayer.studio. ONLY shown
+  // when the host hasn't overridden `branding.productName` — the
+  // assumption is that any host that bothered to set a custom product
+  // name is white-labeling and does NOT want our brand surfacing in
+  // their UI. (If a host later wants the badge anyway, the right move
+  // is a separate `branding.showPoweredBy` opt-in flag — don't change
+  // this default behavior.)
+  const showLiveLayerMark = !branding.productName;
 
   // Two-pill captions for deaf-friendly UX. We render the latest user STT
   // and the latest agent caption as separate pills so the conversation
@@ -570,7 +579,21 @@ export const ExpandedLayout: FC<Props> = ({
         // affordance. The user can dismiss by scrolling past the slot.
         !compactControls && (
           <div className="ll-expanded__header ll-expanded__header--idle">
-            <span className="ll-expanded__brand">{productName}</span>
+            {showLiveLayerMark ? (
+              <a
+                className="ll-expanded__brand ll-expanded__brand--link"
+                href="https://livelayer.studio?utm_source=widget&utm_medium=brand-badge"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Powered by LiveLayer — opens livelayer.studio in a new tab"
+                title="Powered by LiveLayer — visit livelayer.studio"
+              >
+                <LiveLayerMarkIcon size={14} className="ll-expanded__brand-mark" />
+                <span>{productName}</span>
+              </a>
+            ) : (
+              <span className="ll-expanded__brand">{productName}</span>
+            )}
             <div className="ll-expanded__header-actions">
               {showMinimize !== false && (
                 <button

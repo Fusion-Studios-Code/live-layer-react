@@ -740,6 +740,45 @@
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
 
+/* ── "Powered by LiveLayer" mark + link ─────────────────────────
+   Shown in the idle-state header when the host hasn't supplied a
+   custom branding.productName. The mark goes to livelayer.studio in
+   a new tab — opens in _blank so the live-call session isn't
+   interrupted.
+
+   - Layout: flex row, mark + text aligned at the optical baseline.
+   - Gap: 6px reads as "associated pair" without crowding the wordmark.
+   - Underline only on hover so the resting state stays calm; opacity
+     dip on hover makes the link affordance noticeable even on dark
+     host themes where text-decoration is hard to see at 14px.
+   - Focus ring is the standard rounded-2px white outline at 60%
+     alpha — matches the header-action button focus treatment.
+*/
+.ll-expanded__brand--link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-decoration: none;
+  color: inherit;
+  transition: opacity 120ms ease;
+  border-radius: 4px;
+}
+.ll-expanded__brand--link:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ll-expanded__brand--link:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 2px;
+}
+.ll-expanded__brand-mark {
+  /* Slight nudge so the orange mark sits visually centered against
+     the wordmark's cap-height instead of its full em-box. */
+  margin-top: -1px;
+  flex-shrink: 0;
+}
+
 .ll-expanded__header-actions {
   display: flex;
   gap: 6px;
