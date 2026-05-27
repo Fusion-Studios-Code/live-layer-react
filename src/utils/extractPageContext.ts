@@ -316,27 +316,51 @@ export function extractPageContext(
       inferFormIntent(form) ||
       undefined;
 
-    // Every named input / textarea / select inside the form is a
-    // candidate. We deliberately do NOT filter on visibility — a form
-    // below the fold is still agent-fillable, the LLM can scroll the
-    // page first. Privacy filtering happens per-field via
-    // isFieldFillable (password / cc-* / data-ll-private).
+    // Every input / textarea / select inside the form is a candidate.
+    // We deliberately do NOT filter on visibility — a form below the
+    // fold is still agent-fillable, the LLM can scroll the page first.
+    // Privacy filtering happens per-field via isFieldFillable
+    // (password / cc-* / data-ll-private).
+    //
+    // CHANGED (0.14.0): we used to require `[name]` on every input,
+    // which broke fill on React forms that use `id` for <label htmlFor>
+    // accessibility but no `name` (extremely common — the Fusion
+    // portfolio contact form was the trigger case). We now scan ALL
+    // inputs and synthesize a stable agent-callable identifier per
+    // field: `name` → `id` → `field_<n>` positional index. The fill
+    // resolver (fieldFillKey in fillField.ts logic, mirrored in
+    // AvatarWidget.tsx) inverts the same scheme to map the agent's
+    // key back to the real DOM element.
     const fieldEls = Array.from(
       form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
-        "input[name], textarea[name], select[name]",
+        "input, textarea, select",
       ),
     );
     const fieldsOut: PageContext["forms"][number]["fields"] = [];
+    let positionalIdx = 0;
+    const usedKeys = new Set<string>();
     for (const el of fieldEls) {
       if (fieldsOut.length >= MAX_FIELDS_PER_FORM) break;
       if (!isFieldFillable(el)) continue;
       // Skip submit / button / hidden / image — they're not data inputs.
+      // Important: increment positionalIdx ONLY for real data inputs so
+      // the `field_<n>` numbering matches what the fill-side resolver
+      // computes when it filters the same kinds out.
       if (el instanceof HTMLInputElement) {
         const t = el.type;
         if (t === "submit" || t === "button" || t === "reset" || t === "hidden" || t === "image" || t === "file") continue;
       }
-      const name = el.getAttribute("name") || "";
-      if (!name) continue;
+      const rawName = el.getAttribute("name") || "";
+      const rawId = el.getAttribute("id") || "";
+      // Agent-callable identifier. Priority: name > id > positional.
+      // Collisions (e.g. two anonymous fields both falling back to the
+      // same id) are rare but we de-dup to keep the values dict keyable.
+      let name = rawName || rawId || `field_${positionalIdx}`;
+      if (usedKeys.has(name)) {
+        name = `${name}__${positionalIdx}`;
+      }
+      usedKeys.add(name);
+      positionalIdx++;
       const label = fieldLabel(el) || name;
       const type =
         el instanceof HTMLInputElement

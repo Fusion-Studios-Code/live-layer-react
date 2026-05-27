@@ -158,7 +158,7 @@ import {
   clearRoutesCache,
   normalizeRouteInput,
 } from "./utils/extractRoutes";
-import { isFieldFillable } from "./utils/fieldPrivacy";
+import { findFillableFieldInForm } from "./utils/findFieldInForm";
 import { fillField } from "./utils/fillField";
 import { findFormByLooseId } from "./utils/findFormByLooseId";
 import {
@@ -1073,22 +1073,23 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
             console.warn(`[LiveLayer] focus_field: missing fieldName.`);
             return;
           }
-          const fld = form.querySelector<
-            HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
-          >(`[name="${fieldName.replace(/"/g, '\\"')}"]`);
-          if (!fld) {
-            console.warn(
-              `[LiveLayer] focus_field: no input with name="${fieldName}" in form "${formId}".`,
-            );
+          // 0.14.0: agent-callable key is the PageContext field.name —
+          // which is `name` attr → `id` attr → `field_<n>` positional.
+          // findFillableFieldInForm mirrors that synthesis in reverse.
+          const resolved = findFillableFieldInForm(form, fieldName);
+          if (resolved.el === null) {
+            if (resolved.reason === "private") {
+              console.warn(
+                `[LiveLayer] focus_field: field "${fieldName}" is privacy-protected and not focusable.`,
+              );
+            } else {
+              console.warn(
+                `[LiveLayer] focus_field: no input matching key="${fieldName}" in form "${formId}". The agent should use the field.name it observed in PageContext.forms[].fields[].`,
+              );
+            }
             return;
           }
-          if (!isFieldFillable(fld)) {
-            console.warn(
-              `[LiveLayer] focus_field: field "${fieldName}" is privacy-protected and not focusable.`,
-            );
-            return;
-          }
-          fld.focus();
+          resolved.el.focus();
           return;
         }
 
@@ -1103,23 +1104,24 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
         }
         for (const [name, raw] of Object.entries(values)) {
           if (typeof raw !== "string") continue;
-          const fld = form.querySelector<
-            HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
-          >(`[name="${name.replace(/"/g, '\\"')}"]`);
-          if (!fld) {
-            console.warn(
-              `[LiveLayer] fill_form: no input with name="${name}" in form "${formId}". Skipping.`,
-            );
-            continue;
-          }
-          if (!isFieldFillable(fld)) {
-            console.warn(
-              `[LiveLayer] fill_form: field "${name}" is privacy-protected (password / cc-* / private). Skipping.`,
-            );
+          // 0.14.0: same selector-by-synthesized-key flow as focus_field.
+          // Backward compat — keys that match an existing `[name=]` attr
+          // still resolve via the fast path inside findFillableFieldInForm.
+          const resolved = findFillableFieldInForm(form, name);
+          if (resolved.el === null) {
+            if (resolved.reason === "private") {
+              console.warn(
+                `[LiveLayer] fill_form: field "${name}" is privacy-protected (password / cc-* / data-ll-private). Skipping.`,
+              );
+            } else {
+              console.warn(
+                `[LiveLayer] fill_form: no input matching key="${name}" in form "${formId}". The agent should use the field.name it observed in PageContext.forms[].fields[]. Skipping.`,
+              );
+            }
             continue;
           }
           try {
-            fillField(fld, raw);
+            fillField(resolved.el, raw);
           } catch (err) {
             console.warn(
               `[LiveLayer] fill_form: failed to set "${name}".`,

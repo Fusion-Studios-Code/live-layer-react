@@ -101,6 +101,13 @@ export interface PageContext {
     id: string;
     intent?: string;
     fields: Array<{
+      /**
+       * Agent-callable identifier. Prefers the input's `name` attribute,
+       * falls back to `id`, then `field_<n>` positional index within the
+       * form. The agent passes this string back as the key in
+       * `fill_form({ values: { [name]: "..." } })`. Stable across renders
+       * as long as the form's input order doesn't change.
+       */
       name: string;
       label: string;
       type: string;
