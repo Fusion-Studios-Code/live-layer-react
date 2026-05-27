@@ -582,40 +582,61 @@
   flex-direction: column;
 }
 
-.ll-expanded--desktop {
-  width: 400px;
-  height: 560px;
-  border-radius: 20px;
-}
-
-.ll-expanded--mobile {
-  /* Mobile thumbnail card — matches the dimensions the LiveLayer
-     landing page uses for ExperienceForkCard's embedded preview
-     (components/landing/ExperienceFork.tsx — the canonical reference
-     design the team has shipped on www.livelayer.studio). Visitors
-     have explicitly asked us to match it exactly so the package
-     behaves identically across LL's own marketing site and customer
-     sites.
-
-     LL demo dimensions (from ExperienceFork.tsx:36):
-       mobile (default): w-[160px] h-[230px]   ←──┐ matched
-       sm+ (≥640px):     w-[180px] h-[260px]   ←──┘ matched
-
-     Border radius: rounded-2xl in Tailwind = 16px.
-
-     Width and height are explicit pixels (not aspect-ratio) because
-     the reference uses explicit pixels — preserving every detail of
-     the design contract. The two breakpoints match LL exactly so the
-     widget reads as the same component in both contexts. */
+/* Sizing is media-query-driven, NOT JS-class-driven.
+ *
+ * Why: useIsMobile() is SSR-safe — it returns `false` on the server
+ * and on the very first client paint, then flips to `true` on the
+ * first useEffect tick. If sizing were keyed off the .ll-expanded--
+ * desktop / .ll-expanded--mobile class (which IS JS-driven), the
+ * first paint would render at desktop dimensions (400×560), then
+ * snap down to mobile dimensions (160×230) once the effect ran.
+ * Visitors on phones saw a visible flash of an oversized widget.
+ *
+ * The component still adds the .ll-expanded--desktop / --mobile
+ * class — other styles (the compact-status pill positioning,
+ * topbar padding, PIP sizing, etc.) key off it. But the bounding-
+ * box dimensions live in the .ll-expanded base + the media query
+ * below, so the right size is applied at first paint regardless
+ * of JS readiness.
+ *
+ * Breakpoint: 640px (matches Tailwind's `sm`). When a consumer
+ * passes a custom mobileBreakpoint prop, the JS still computes
+ * isMobile against that custom value (drives layout / waveform /
+ * compactControls behavior) — but the CSS box dims stick to 640px.
+ * Acceptable tradeoff: the visual size flickers slightly when the
+ * custom breakpoint differs from 640, but the common case (every
+ * site using the default breakpoint) has zero flash.
+ *
+ * LL landing reference (components/landing/ExperienceFork.tsx:36):
+ *   mobile (default): w-[160px] h-[230px]
+ *   sm+ (≥640px):     w-[180px] h-[260px]
+ * Desktop reference: 400 × 560, matches editor preview at app.livelayer.studio.
+ */
+.ll-expanded {
+  /* Mobile-first: phones get the thumbnail card by default. The
+     desktop override below kicks in at ≥1024px where there's
+     actually room for the full 400 × 560 panel. */
   width: 160px;
   height: 230px;
   border-radius: 16px;
 }
 
-@media (min-width: 640px) {
-  .ll-expanded--mobile {
+@media (min-width: 640px) and (max-width: 1023px) {
+  .ll-expanded {
+    /* Sm-to-lg breakpoint — small tablets / large phones in
+       landscape. Slightly larger thumbnail. Matches the LL demo's
+       `sm:w-[180px] sm:h-[260px]` exactly. */
     width: 180px;
     height: 260px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .ll-expanded {
+    /* Desktop card — full 400 × 560 with a softer 20px radius. */
+    width: 400px;
+    height: 560px;
+    border-radius: 20px;
   }
 }
 
