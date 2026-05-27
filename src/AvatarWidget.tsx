@@ -139,6 +139,7 @@ import { useScreenShareState } from "./hooks/useScreenShareState";
 import { useMediaDevices } from "./hooks/useMediaDevices";
 import { useAgentInfo } from "./hooks/useAgentInfo";
 import { useDisplayModePersistence } from "./hooks/useDisplayModePersistence";
+import { readLocalStorage } from "./utils/persistence";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { usePathname } from "./hooks/usePathname";
 import { useRouteMatch } from "./hooks/useRouteMatch";
@@ -537,7 +538,13 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     experienceMode = "WIDGET",
     autoConnect = false,
     displayMode: controlledDisplayMode,
-    defaultDisplayMode = "expanded",
+    // No destructure default — `undefined` here means "consumer didn't
+    // pin a preferred initial mode, infer it from the viewport." We
+    // resolve to "minimized" on mobile (a compact bottom bar) and
+    // "expanded" on desktop (the 400×560 panel) below, once isMobile
+    // is known. Consumers that explicitly pass any value get exactly
+    // what they asked for.
+    defaultDisplayMode,
     onDisplayModeChange,
     position = "bottom-right",
     mobileBreakpoint = 640,
@@ -641,13 +648,73 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   // a legacy controlled-mode caller can't drive displayMode away
   // from "expanded" while in EMBEDDED.
   const isEmbedded = experienceMode === "EMBEDDED";
+  // Viewport detection FIRST so we can pick a viewport-correct initial
+  // display mode below. Was previously declared after the displayMode
+  // hook, but isMobile is now an input to the default resolution.
+  const isMobile = useIsMobile(mobileBreakpoint);
+
+  // Inferred initial mode when the consumer didn't pin one explicitly.
+  // Mobile gets the compact bottom bar ("minimized") instead of the
+  // full bottom sheet ("expanded") — a freshly-loaded page on phone
+  // covering 80vh in the idle state was overwhelming and blocked the
+  // host's actual content. The user can still tap the bar to expand
+  // into the full sheet for the call.
+  //
+  // Note: useIsMobile returns `false` on first render (SSR-safe), then
+  // resolves true on the first effect tick on a phone. That means the
+  // first paint will use "expanded" even on mobile. The post-mount
+  // effect below flips to minimized once isMobile settles — provided
+  // the consumer hasn't pinned a default and there's no stored value
+  // from a prior session.
+  const inferredDefault: DisplayMode = isMobile ? "minimized" : "expanded";
+  const resolvedDefault: DisplayMode = defaultDisplayMode ?? inferredDefault;
+
   const [displayModeRaw, setDisplayModeRaw] = useDisplayModePersistence({
     value: controlledDisplayMode,
-    defaultValue: defaultDisplayMode,
+    defaultValue: resolvedDefault,
     onChange: onDisplayModeChange,
     persistKey,
     disablePersistence: isEmbedded || disablePersistence,
   });
+
+  // Post-mount viewport-aware flip: useIsMobile starts false on SSR /
+  // first paint, so the initial useDisplayModePersistence call ends up
+  // at "expanded" even on phones. Once the effect tick resolves
+  // isMobile = true, flip to "minimized" UNLESS:
+  //   - the consumer is controlling displayMode (they own it),
+  //   - the consumer explicitly passed defaultDisplayMode (they pinned it),
+  //   - we're in EMBEDDED mode (locked to expanded),
+  //   - persistence is disabled (no stored value to even check),
+  //   - the user has a stored value from a prior session (their
+  //     explicit choice wins over our inference).
+  const hasAppliedMobileDefaultRef = useRef(false);
+  useEffect(() => {
+    if (hasAppliedMobileDefaultRef.current) return;
+    if (controlledDisplayMode !== undefined) return;
+    if (defaultDisplayMode !== undefined) return;
+    if (isEmbedded || disablePersistence) return;
+    const stored = readLocalStorage(`${persistKey}:display-mode`);
+    if (stored) return;
+    if (isMobile && displayModeRaw === "expanded") {
+      setDisplayModeRaw("minimized");
+    }
+    // Mark applied regardless — on desktop the default is already
+    // correct, and on mobile we've just flipped (or chose not to
+    // because of one of the guards). Either way, this effect should
+    // not run again on subsequent viewport changes — once the visitor
+    // is mid-session, viewport changes shouldn't yank them between
+    // modes.
+    hasAppliedMobileDefaultRef.current = true;
+  }, [
+    isMobile,
+    displayModeRaw,
+    defaultDisplayMode,
+    controlledDisplayMode,
+    isEmbedded,
+    disablePersistence,
+    persistKey,
+    setDisplayModeRaw,
+  ]);
   const displayMode: DisplayMode = isEmbedded ? "expanded" : displayModeRaw;
   const setDisplayMode: (m: DisplayMode) => void = isEmbedded
     ? () => {
@@ -669,7 +736,8 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   const showClose = showCloseProp ?? (isEmbedded ? false : true);
 
   // ── Responsive ───────────────────────────────────────────────
-  const isMobile = useIsMobile(mobileBreakpoint);
+  // isMobile is declared earlier in the display-mode block — it's
+  // an input to the viewport-aware initial-mode resolution.
 
   // ── Audio level (shared) ─────────────────────────────────────
   const audioLevel = useAudioLevel();
