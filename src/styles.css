@@ -819,6 +819,38 @@
   margin-left: auto;
 }
 
+/* ── Mobile thumbnail chrome (0.18.0) ────────────────────────────
+   The 150px 9:16 widget is small enough that the standard 40px
+   header buttons + brand pill overcrowd the surface. On mobile we:
+     - Hide the "Live Layer" brand pill in the IDLE header. The
+       brand mark already lives in the minimized bottom bar that
+       appears once a session ends, and the surface is too small to
+       afford the wordmark gracefully.
+     - Hide the minimize button in the IDLE header. There's nothing
+       to minimize FROM until a call starts — minimizing a session-
+       less widget would just dismiss it, which is what the close
+       (X) button is for. Removes the redundant affordance.
+     - Shrink the close (X) button visual to 26×26 (still well
+       above the 18px touch-target floor the user specified). Icon
+       inside stays 12px. During an active call the same shrink
+       applies to the minimize button so the in-call header doesn't
+       crowd the thumbnail.
+
+   Selectors scope to .ll-widget--mobile so desktop is untouched. */
+.ll-widget--mobile .ll-expanded__header--idle .ll-expanded__brand,
+.ll-widget--mobile .ll-expanded__header--idle .ll-hbtn--ghost {
+  display: none;
+}
+
+.ll-widget--mobile .ll-hbtn {
+  width: 26px;
+  height: 26px;
+}
+.ll-widget--mobile .ll-hbtn svg {
+  width: 10px;
+  height: 10px;
+}
+
 /* ── Active top bar (pills) ─────────────────────────────────── */
 
 .ll-expanded__topbar {
