@@ -589,25 +589,34 @@
 }
 
 .ll-expanded--mobile {
-  /* Mobile expanded is a thumbnail PiP — 9:16 portrait, ~150px wide.
-     The visitor's website is the primary surface; the widget is a
-     persistent reachable affordance, not the focus. Sized so it fits
-     comfortably alongside content without blocking it.
+  /* Mobile thumbnail card — matches the dimensions the LiveLayer
+     landing page uses for ExperienceForkCard's embedded preview
+     (components/landing/ExperienceFork.tsx — the canonical reference
+     design the team has shipped on www.livelayer.studio). Visitors
+     have explicitly asked us to match it exactly so the package
+     behaves identically across LL's own marketing site and customer
+     sites.
 
-     Evolution:
-       v0:    100vw × 80dvh edge-to-edge sheet → blocked 60% of screen
-       v0.16: 380 × 540 card → marginally smaller, still ~90% of phone width
-       v0.17: 150 × 267 (9:16) thumbnail → properly out-of-the-way
+     LL demo dimensions (from ExperienceFork.tsx:36):
+       mobile (default): w-[160px] h-[230px]   ←──┐ matched
+       sm+ (≥640px):     w-[180px] h-[260px]   ←──┘ matched
 
-     The clamp lets the card scale slightly with viewport — tiny phones
-     (320px wide) get 140px, normal phones (393-430px) stay at the
-     150px sweet spot, larger phones / foldables (500px+) can grow to
-     180px. aspect-ratio derives height from width so the 9:16 portrait
-     framing stays exact regardless of where in the clamp range the
-     viewport lands. */
-  width: clamp(140px, 38vw, 180px);
-  aspect-ratio: 9 / 16;
+     Border radius: rounded-2xl in Tailwind = 16px.
+
+     Width and height are explicit pixels (not aspect-ratio) because
+     the reference uses explicit pixels — preserving every detail of
+     the design contract. The two breakpoints match LL exactly so the
+     widget reads as the same component in both contexts. */
+  width: 160px;
+  height: 230px;
   border-radius: 16px;
+}
+
+@media (min-width: 640px) {
+  .ll-expanded--mobile {
+    width: 180px;
+    height: 260px;
+  }
 }
 
 /* ── Background layers ───────────────────────────────────────── */
