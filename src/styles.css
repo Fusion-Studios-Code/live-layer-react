@@ -141,13 +141,26 @@
   pointer-events: auto;
 }
 
-/* Mobile: minimized + expanded ignore position, always full-width bottom. */
-.ll-widget--mobile.ll-widget--minimized,
-.ll-widget--mobile.ll-widget--expanded {
+/* Mobile minimized is the explicit "shrink to a bottom bar" state the
+   user picks via the minimize button. Honor that intent — full-width
+   72px dock anchored to the bottom. */
+.ll-widget--mobile.ll-widget--minimized {
   left: 0;
   right: 0;
   bottom: 0;
   top: auto;
+}
+
+/* Mobile expanded was previously also pinned edge-to-edge (100vw ×
+   80dvh). That made the idle widget cover ~60% of the phone screen
+   before the visitor had tapped anything — repeatedly reported as
+   "this is blocking the entire interface." Mobile expanded now uses
+   the same card shape as desktop, sized down to fit comfortably in a
+   phone viewport. The position prop (bottom-right by default) anchors
+   it via the rules in .ll-widget[data-position="..."] above. */
+.ll-widget--mobile.ll-widget--expanded {
+  /* Inherits left/right/top/bottom from the position-prop rules.
+     Nothing to override here. */
 }
 
 /* ── Embedded experience mode ──────────────────────────────────────
@@ -576,12 +589,22 @@
 }
 
 .ll-expanded--mobile {
-  width: 100vw;
-  height: 80dvh;
-  border-top-left-radius: 20px;
-  border-top-right-radius: 20px;
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
+  /* Card layout — same shape as desktop, sized to fit comfortably in
+     a phone viewport with breathing room on every side. The min()
+     calls bound the card on small phones (iPhone SE at 320×568 still
+     gets a usable card with ~32px margins) while keeping a generous
+     default on modern devices (iPhone 16 Pro at 402×874 gets the
+     full 380×540 card). dvh accounts for the iOS dynamic toolbar so
+     the card never gets clipped behind the URL bar or home indicator.
+
+     Was previously `100vw × 80dvh` edge-to-edge bottom sheet — covered
+     ~60% of the screen in the idle state before the visitor had even
+     tapped anything. The expanded layout is now position-aware on
+     mobile too (see .ll-widget--mobile.ll-widget--expanded above) so
+     the position prop anchors the card to the chosen corner. */
+  width: min(380px, calc(100vw - 32px));
+  height: min(540px, calc(100dvh - 32px));
+  border-radius: 20px;
 }
 
 /* ── Background layers ───────────────────────────────────────── */
