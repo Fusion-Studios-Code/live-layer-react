@@ -685,8 +685,17 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   //   - the consumer explicitly passed defaultDisplayMode (they pinned it),
   //   - we're in EMBEDDED mode (locked to expanded),
   //   - persistence is disabled (no stored value to even check),
-  //   - the user has a stored value from a prior session (their
-  //     explicit choice wins over our inference).
+  //   - the user has a NON-expanded stored value from a prior session
+  //     (their explicit minimize / hide choice wins).
+  //
+  // 0.15.3 change: we used to bail outright whenever there WAS a stored
+  // value. In practice every pre-0.15.1 mobile session wrote "expanded"
+  // to localStorage as a side effect of the old default — the stored
+  // value was indistinguishable from a deliberate choice but was
+  // actually never one the visitor made. Now, a stored "expanded" on
+  // mobile is treated as stale default-induced and overridden to
+  // "minimized"; stored "minimized" / "hidden" are real choices and
+  // preserved.
   const hasAppliedMobileDefaultRef = useRef(false);
   useEffect(() => {
     if (hasAppliedMobileDefaultRef.current) return;
@@ -694,7 +703,11 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     if (defaultDisplayMode !== undefined) return;
     if (isEmbedded || disablePersistence) return;
     const stored = readLocalStorage(`${persistKey}:display-mode`);
-    if (stored) return;
+    // Preserve any non-expanded stored mode — those reflect a real
+    // visitor choice (minimize / hide). Only "expanded" is suspect
+    // because it's both the historic default AND a valid choice; we
+    // resolve the ambiguity in favor of the better mobile UX.
+    if (stored && stored !== "expanded") return;
     if (isMobile && displayModeRaw === "expanded") {
       setDisplayModeRaw("minimized");
     }
