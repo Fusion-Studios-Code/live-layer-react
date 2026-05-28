@@ -24,6 +24,10 @@ import type { AgentState, ConnectionState, TranscriptEntry } from "@livelayer/sd
 import { AvatarImage } from "../components/AvatarImage";
 import { LiveLayerMarkIcon } from "../components/icons/LiveLayerMarkIcon";
 import type { BrandingConfig, TeamMember, WidgetPosition } from "../types";
+import type {
+  DragHandleProps,
+  ResizeHandleProps,
+} from "../hooks/useDragAndResize";
 import { CompactToolbar } from "./CompactToolbar";
 
 interface Props {
@@ -120,6 +124,16 @@ interface Props {
   onMinimize: () => void;
   onClose: () => void;
   onClearMicError: () => void;
+
+  // ── Drag + resize (optional) ──────────────────────────────────
+  // Spread onto the header (drag handle) and a corner grip (resize).
+  // The handlers are no-ops when the feature is disabled, and the
+  // `data-ll-drag-handle` / `data-ll-resize-handle` attributes are
+  // undefined then so the cursor / touch-action CSS doesn't apply.
+  // Both optional so existing callers / tests that don't pass them keep
+  // working unchanged.
+  dragHandleProps?: DragHandleProps;
+  resizeHandleProps?: ResizeHandleProps;
 }
 
 export const ExpandedLayout: FC<Props> = ({
@@ -180,6 +194,8 @@ export const ExpandedLayout: FC<Props> = ({
   onMinimize,
   onClose,
   onClearMicError,
+  dragHandleProps,
+  resizeHandleProps,
 }) => {
   const hasTeamSwitcher = (teamMembers?.length ?? 0) > 1;
   const isActive =
@@ -435,7 +451,7 @@ export const ExpandedLayout: FC<Props> = ({
       {isActive ? (
         <>
           {!compactControls && (
-            <div className="ll-expanded__topbar">
+            <div className="ll-expanded__topbar" {...dragHandleProps}>
               {!chromeless && (
               <div className="ll-expanded__topbar-left">
                 {/* Agent-name pill with optional dropdown */}
@@ -582,7 +598,7 @@ export const ExpandedLayout: FC<Props> = ({
         // pre-0.18.0 behavior) left users no way out short of scrolling
         // the page itself.
         (
-          <div className="ll-expanded__header ll-expanded__header--idle">
+          <div className="ll-expanded__header ll-expanded__header--idle" {...dragHandleProps}>
             {!compactControls && (
               showLiveLayerMark ? (
                 <a
@@ -964,6 +980,26 @@ export const ExpandedLayout: FC<Props> = ({
           </div>
         );
       })()}
+
+      {/* ── Resize grip (bottom-right corner) ─────────────────────
+          Rendered only when the host enabled resizing — gated on the
+          presence of the data attribute the hook sets. Pointer events
+          are owned by useDragAndResize; the diagonal lines are the
+          standard corner-grip affordance. aria-hidden + a generous hit
+          area via CSS keep it a pointer-only nicety (keyboard users get
+          the default CSS sizing). */}
+      {resizeHandleProps?.["data-ll-resize-handle"] !== undefined && (
+        <div
+          className="ll-expanded__resize-grip"
+          {...resizeHandleProps}
+          aria-hidden
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+            <line x1="11" y1="4" x2="4" y2="11" />
+            <line x1="11" y1="8" x2="8" y2="11" />
+          </svg>
+        </div>
+      )}
     </div>
   );
 };

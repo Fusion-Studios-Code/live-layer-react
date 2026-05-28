@@ -1800,3 +1800,82 @@
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.55; transform: scale(0.7); }
 }
+
+/* ── Drag + resize (0.19.0) ────────────────────────────────────────
+   Lets the visitor move the floating widget off page content (phone
+   number, CTA) and resize it. Geometry lives as an INLINE style
+   override applied by useDragAndResize ONLY after the visitor actually
+   drags/resizes (or a saved geometry is restored) — until then this
+   stylesheet's media-query sizing + .ll-widget[data-position] corner
+   anchoring stay in charge so there's no first-paint flash. These rules
+   only style the handles + interaction affordances; they never set box
+   dimensions or position. */
+
+/* Drag handle = the expanded header row. `data-ll-drag-handle` is set by
+   the hook only when dragging is enabled, so the grab cursor + page-scroll
+   suppression apply exactly when a drag can actually start. */
+.ll-widget [data-ll-drag-handle] {
+  cursor: grab;
+  /* Stop touch-drag on the handle from scrolling the page. */
+  touch-action: none;
+}
+.ll-widget.is-dragging [data-ll-drag-handle] {
+  cursor: grabbing;
+}
+
+/* While dragging OR resizing, kill text selection across the whole widget
+   so a fast pointer drag doesn't paint a selection over the header copy /
+   transcript pills, and drop transitions so the surface tracks the pointer
+   1:1 instead of easing behind it. */
+.ll-widget.is-dragging,
+.ll-widget.is-resizing,
+.ll-widget.is-dragging *,
+.ll-widget.is-resizing * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.ll-widget.is-dragging .ll-expanded,
+.ll-widget.is-resizing .ll-expanded {
+  transition: none;
+}
+
+/* Resize grip — bottom-right corner of the expanded surface. Conventional
+   placement (opposite the top-left the box grows from) and the diagonal
+   double-chevron glyph reads as "drag to resize" without a tooltip. The
+   element sits above the bottom toolbar (z-index) but is small enough not
+   to cover the end-call button. */
+.ll-expanded__resize-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 3px;
+  color: rgba(255, 255, 255, 0.55);
+  cursor: nwse-resize;
+  /* Stop touch-drag on the grip from scrolling the page. */
+  touch-action: none;
+  /* The grip is a pointer-only nicety; never let it capture selection. */
+  user-select: none;
+  -webkit-user-select: none;
+  transition: color 0.15s ease;
+}
+.ll-expanded__resize-grip:hover {
+  color: rgba(255, 255, 255, 0.9);
+}
+.ll-expanded__resize-grip > svg {
+  display: block;
+  pointer-events: none;
+}
+
+/* Once the visitor has set an explicit geometry, the inline width/height
+   override the media-query box dims. We pin position:fixed inline too (the
+   hook sets it) so this class is mostly a hook for host CSS / tests; no
+   dimensional rules live here on purpose — geometry is the inline layer. */
+.ll-widget--has-geometry {
+  /* intentionally empty — see comment above. */
+}

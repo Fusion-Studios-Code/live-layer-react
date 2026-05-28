@@ -140,6 +140,7 @@ import { useMediaDevices } from "./hooks/useMediaDevices";
 import { useAgentInfo } from "./hooks/useAgentInfo";
 import { useDisplayModePersistence } from "./hooks/useDisplayModePersistence";
 import { useIsMobile } from "./hooks/useIsMobile";
+import { useDragAndResize } from "./hooks/useDragAndResize";
 import { usePathname } from "./hooks/usePathname";
 import { useRouteMatch } from "./hooks/useRouteMatch";
 import {
@@ -237,6 +238,37 @@ export interface AvatarWidgetProps {
   // ── Positioning ──────────────────────────────────────────────
   position?: WidgetPosition;
   mobileBreakpoint?: number | false;
+
+  /**
+   * Let the visitor drag the expanded widget out of the way by grabbing
+   * its header (the brand / agent-name row). Solves the recurring embed
+   * complaint that the floating widget covers a phone number or CTA.
+   *
+   * Uses pointer events with viewport clamping — the widget can be moved
+   * anywhere but never fully off-screen. The dragged position persists to
+   * localStorage (keyed by `persistKey`); double-clicking the header
+   * resets it back to the corner. A drag never starts from the header's
+   * buttons (minimize / close), only from empty handle space.
+   *
+   * Default: ON for desktop, OFF for mobile (`!isMobile`). A ~160px
+   * thumbnail on a 390px phone has nowhere useful to go, and drag would
+   * fight page scroll. Pass `true` to force it on everywhere (honored
+   * even on mobile), `false` to force it off.
+   */
+  draggable?: boolean;
+
+  /**
+   * Let the visitor resize the expanded widget via a corner grip
+   * (bottom-right). Clamped between a sensible minimum (so the controls
+   * never collapse, ~280x380 on desktop) and the viewport. The size
+   * persists to localStorage alongside the dragged position;
+   * double-clicking the header resets both.
+   *
+   * Default: ON for desktop, OFF for mobile (`!isMobile`) — the mobile
+   * thumbnail is intentionally small and shouldn't grow to block the
+   * screen. Pass `true` / `false` to override.
+   */
+  resizable?: boolean;
 
   // ── Persistence ──────────────────────────────────────────────
   persistKey?: string;
@@ -548,6 +580,8 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     onDisplayModeChange,
     position = "bottom-right",
     mobileBreakpoint = 640,
+    draggable: draggableProp,
+    resizable: resizableProp,
     persistKey = "ll-widget",
     disablePersistence = false,
     teamMembers,
@@ -703,6 +737,27 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   // compactControls alone does the right thing.
   const effectiveCompactControls =
     compactControls || (!isEmbedded && isMobile);
+
+  // ── Drag + resize (geometry override) ────────────────────────
+  // Lets the visitor move the floating widget off a phone number / CTA
+  // and resize it. Default ON for desktop, OFF for mobile — a ~160px
+  // thumbnail on a phone has nowhere useful to go and drag fights page
+  // scroll. Explicit props win over the default on either platform.
+  //
+  // EMBEDDED never gets drag/resize: the host owns the slot's size and
+  // position, and the widget's root is `position: relative` there (not
+  // fixed), so an inline top/left/width/height would do nothing useful
+  // or actively fight the host layout. We also skip geometry persistence
+  // in embedded (each mount is its own scope) — same rule as display-mode
+  // persistence.
+  const draggable = !isEmbedded && (draggableProp ?? !isMobile);
+  const resizable = !isEmbedded && (resizableProp ?? !isMobile);
+  const dragResize = useDragAndResize({
+    draggable,
+    resizable,
+    persistKey,
+    disablePersistence: isEmbedded || disablePersistence,
+  });
 
   // ── Responsive ───────────────────────────────────────────────
   // isMobile is declared earlier in the display-mode block — it's
@@ -1905,10 +1960,26 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   if (branding.backgroundColor) brandingVars["--ll-color-bg"] = branding.backgroundColor;
   if (branding.textColor) brandingVars["--ll-color-fg"] = branding.textColor;
 
+  // The expanded floating root gets the drag/resize geometry override
+  // merged LAST so explicit top/left/width/height win over the corner-
+  // anchoring CSS once the visitor has moved/resized. dragResize.style is
+  // an EMPTY object until interaction (or a restored geometry), so the CSS
+  // media-query sizing + [data-position] anchoring remain the default at
+  // first paint — preserving the 0.18.3 no-flash fix. The floating chrome
+  // (hidden / minimized) keeps plain brandingVars: it has its own edge
+  // anchoring and is never drag/resize-managed.
+  const mainRootStyle: CSSProperties = {
+    ...brandingVars,
+    ...dragResize.style,
+  };
+
   const containerClasses = [
     "ll-widget",
     `ll-widget--${displayMode}`,
     `ll-widget--${isMobile ? "mobile" : "desktop"}`,
+    dragResize.hasGeometry ? "ll-widget--has-geometry" : null,
+    dragResize.isDragging ? "is-dragging" : null,
+    dragResize.isResizing ? "is-resizing" : null,
     className,
   ]
     .filter(Boolean)
@@ -1937,7 +2008,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   const mainContent = (
     <div
       className={containerClasses}
-      style={brandingVars}
+      style={mainRootStyle}
       data-display-mode={displayMode}
       data-position={position}
       data-experience-mode={experienceMode === "EMBEDDED" ? "embedded" : "widget"}
@@ -2001,6 +2072,8 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           onMinimize={handleMinimize}
           onClose={handleHide}
           onClearMicError={mic.clearError}
+          dragHandleProps={dragResize.dragHandleProps}
+          resizeHandleProps={dragResize.resizeHandleProps}
         />
       )}
     </div>

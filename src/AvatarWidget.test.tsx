@@ -556,4 +556,116 @@ describe("AvatarWidget (controlledSession API)", () => {
       expect(container.querySelector(".ll-toolbar")).toBeTruthy();
     });
   });
+
+  describe("draggable / resizable", () => {
+    // useIsMobile reads matchMedia; jsdom's default returns matches:false
+    // (desktop). Install a controllable stub so we can flip to mobile.
+    function setMobile(isMobile: boolean) {
+      window.matchMedia = ((query: string) => ({
+        matches: isMobile,
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      })) as unknown as typeof window.matchMedia;
+    }
+
+    it("enables drag + resize by default on desktop (handles + grip render)", () => {
+      setMobile(false);
+      const { container } = renderWithControlled({ connectionState: "idle" });
+      // Idle header carries the drag handle attribute.
+      expect(
+        container.querySelector("[data-ll-drag-handle]"),
+      ).toBeTruthy();
+      // Resize grip renders.
+      expect(
+        container.querySelector(".ll-expanded__resize-grip"),
+      ).toBeTruthy();
+      expect(
+        container.querySelector("[data-ll-resize-handle]"),
+      ).toBeTruthy();
+    });
+
+    it("disables drag + resize by default on mobile (no handle attr, no grip)", () => {
+      setMobile(true);
+      const { container } = renderWithControlled({ connectionState: "idle" });
+      expect(
+        container.querySelector("[data-ll-drag-handle]"),
+      ).toBeNull();
+      expect(
+        container.querySelector(".ll-expanded__resize-grip"),
+      ).toBeNull();
+    });
+
+    it("honors an explicit draggable override on mobile", () => {
+      setMobile(true);
+      const { container } = renderWithControlled(
+        { connectionState: "idle" },
+        { draggable: true },
+      );
+      expect(
+        container.querySelector("[data-ll-drag-handle]"),
+      ).toBeTruthy();
+    });
+
+    it("honors an explicit resizable override on mobile", () => {
+      setMobile(true);
+      const { container } = renderWithControlled(
+        { connectionState: "idle" },
+        { resizable: true },
+      );
+      expect(
+        container.querySelector(".ll-expanded__resize-grip"),
+      ).toBeTruthy();
+    });
+
+    it("force-disables drag + resize on desktop when passed false", () => {
+      setMobile(false);
+      const { container } = renderWithControlled(
+        { connectionState: "idle" },
+        { draggable: false, resizable: false },
+      );
+      expect(
+        container.querySelector("[data-ll-drag-handle]"),
+      ).toBeNull();
+      expect(
+        container.querySelector(".ll-expanded__resize-grip"),
+      ).toBeNull();
+    });
+
+    it("never sets an inline position/size at first paint (no-flash)", () => {
+      setMobile(false);
+      const { container } = renderWithControlled({ connectionState: "idle" });
+      const root = container.querySelector(".ll-widget");
+      // No geometry yet → no inline override. The corner-anchoring + CSS
+      // sizing stay in charge. (The branding/zIndex inline style may exist,
+      // but none of the geometry keys should.)
+      const style = (root as HTMLElement).style;
+      expect(style.top).toBe("");
+      expect(style.left).toBe("");
+      expect(style.width).toBe("");
+      expect(style.height).toBe("");
+      expect(root).not.toHaveClass("ll-widget--has-geometry");
+    });
+
+    it("does not render drag handle or grip in EMBEDDED mode", () => {
+      setMobile(false);
+      const { container } = renderWithControlled(
+        { connectionState: "idle" },
+        { experienceMode: "EMBEDDED", draggable: true, resizable: true },
+      );
+      // Embedded host owns size/position — feature is force-disabled even
+      // with explicit true props.
+      expect(
+        container.querySelector("[data-ll-drag-handle]"),
+      ).toBeNull();
+      expect(
+        container.querySelector(".ll-expanded__resize-grip"),
+      ).toBeNull();
+    });
+  });
+
 });
