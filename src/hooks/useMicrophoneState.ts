@@ -2,8 +2,17 @@
 // Owns the user's mic track lifecycle: publish on connect, mute/unmute on
 // demand, cleanup on disconnect. Exposes a friendly error string when
 // the browser denies permission so the UI can prompt.
+//
+// 0.20.0: optional boot-up gate. When `gateUntilAgentReady` is true and
+// `agentState` is wired, the hook mutes the freshly-published mic and
+// holds it muted until the agent first reports "listening". Without
+// this the worker's STT subscribes the moment the track appears and
+// transcribes any partial speech during the connect/greeting window
+// into the agent's first turn (e.g. the user saying "hi" before the
+// avatar has greeted). The user wins immediately — toggleMute releases
+// the gate so a manual click during the window isn't undone later.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createLocalAudioTrack,
   type LocalAudioTrack,
@@ -21,6 +30,29 @@ function trackToStream(track: LocalAudioTrack | null): MediaStream | null {
   const mst = track?.mediaStreamTrack;
   if (!mst) return null;
   return new MediaStream([mst]);
+}
+
+export interface MicrophoneStateOptions {
+  /**
+   * When true, the freshly-published mic is muted until `agentState`
+   * first transitions to "listening". Prevents the worker's STT from
+   * picking up speech during the connect/greeting window. Released
+   * early if the user calls `toggleMute` — their click wins.
+   *
+   * Default: `false` (pre-0.20.0 behavior). `<AvatarWidget>` passes
+   * `true` so embed sites get the gate without opting in. Direct
+   * hook consumers can opt in by passing `true` alongside `agentState`.
+   *
+   * If `true` but no `agentState` is ever set, the mic stays muted —
+   * you almost certainly want both options together.
+   */
+  gateUntilAgentReady?: boolean;
+  /**
+   * Current agent state from `useLiveKitSession` (or your own source).
+   * Watched only when `gateUntilAgentReady` is true — the first
+   * transition to "listening" unmutes and releases the gate.
+   */
+  agentState?: string | null;
 }
 
 export interface MicrophoneStateHandle {
@@ -65,12 +97,25 @@ export interface MicrophoneStateHandle {
   getMicStream: () => MediaStream | null;
 }
 
-export function useMicrophoneState(): MicrophoneStateHandle {
-  const [isMuted, setIsMuted] = useState(false);
+export function useMicrophoneState(
+  opts: MicrophoneStateOptions = {},
+): MicrophoneStateHandle {
+  const gateEnabled = opts.gateUntilAgentReady ?? false;
+  const agentState = opts.agentState ?? null;
+  const [isMuted, setIsMuted] = useState(gateEnabled);
   const [activeDeviceId, setActiveDeviceId] = useState<string>("");
   const [micError, setMicError] = useState<string | null>(null);
   const trackRef = useRef<LocalAudioTrack | null>(null);
   const roomRef = useRef<Room | null>(null);
+  // Boot-up gate. `active` flips false on user toggle (their click
+  // wins) or on the first agentState=listening release. `lastAutoIntent`
+  // lets the release effect distinguish "user/host hasn't touched the
+  // mic since we muted it" from "someone externally changed the room
+  // mic state during the gate window".
+  const gateRef = useRef<{ active: boolean; lastAutoIntent: boolean | null }>({
+    active: gateEnabled,
+    lastAutoIntent: null,
+  });
 
   const setupMic = useCallback(async (room: Room) => {
     // Replace any prior track cleanly.
@@ -92,8 +137,19 @@ export function useMicrophoneState(): MicrophoneStateHandle {
       });
       await room.localParticipant.publishTrack(track);
       trackRef.current = track;
-      // Keep isMuted in sync with the new track's current state.
-      setIsMuted(track.isMuted);
+      // Boot-up gate: silence the just-published track until the agent
+      // is ready (see header comment). Small race — publishTrack returned
+      // before this setMicrophoneEnabled(false) lands, so a few frames
+      // may go out before the source flips. The worker hasn't subscribed
+      // yet in that window so STT doesn't see them in practice.
+      if (gateRef.current.active) {
+        await room.localParticipant.setMicrophoneEnabled(false);
+        gateRef.current.lastAutoIntent = false;
+        setIsMuted(true);
+      } else {
+        // Keep isMuted in sync with the new track's current state.
+        setIsMuted(track.isMuted);
+      }
       // Capture the deviceId actually selected so the menu can render
       // the correct active row.
       const settings = track.mediaStreamTrack?.getSettings?.();
@@ -147,6 +203,9 @@ export function useMicrophoneState(): MicrophoneStateHandle {
     // Optimistic UI: flip the visible state immediately so the
     // mute button doesn't lag behind the user's intent.
     setIsMuted(nextMuted);
+    // User touched the mic — their call wins. Release the gate so the
+    // agent-state effect doesn't override on first "listening".
+    gateRef.current.active = false;
 
     if (!room) return;
     try {
@@ -159,6 +218,28 @@ export function useMicrophoneState(): MicrophoneStateHandle {
       setIsMuted(!nextMuted);
     }
   }, [isMuted]);
+
+  // Boot-up gate release: on the first agentState=listening transition,
+  // unmute the mic. User-override safety: only auto-flip if the room mic
+  // state still matches what we last set. If a host (e.g. dashboard V2's
+  // own gate logic, or voice-clone's setMicEnabled) changed it, leave
+  // their state and just release the gate.
+  useEffect(() => {
+    if (!gateRef.current.active) return;
+    if (agentState !== "listening") return;
+    const room = roomRef.current;
+    const local = room?.localParticipant;
+    if (!local) {
+      gateRef.current.active = false;
+      return;
+    }
+    if (local.isMicrophoneEnabled === gateRef.current.lastAutoIntent) {
+      void local.setMicrophoneEnabled(true);
+      gateRef.current.lastAutoIntent = true;
+      setIsMuted(false);
+    }
+    gateRef.current.active = false;
+  }, [agentState]);
 
   const teardownMic = useCallback(() => {
     const track = trackRef.current;
@@ -173,9 +254,11 @@ export function useMicrophoneState(): MicrophoneStateHandle {
     }
     trackRef.current = null;
     roomRef.current = null;
-    setIsMuted(false);
+    // Re-arm the gate so the next setupMic re-mutes on publish.
+    gateRef.current = { active: gateEnabled, lastAutoIntent: null };
+    setIsMuted(gateEnabled);
     setActiveDeviceId("");
-  }, []);
+  }, [gateEnabled]);
 
   const clearError = useCallback(() => setMicError(null), []);
 
