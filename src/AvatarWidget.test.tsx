@@ -668,4 +668,108 @@ describe("AvatarWidget (controlledSession API)", () => {
     });
   });
 
+  // ─── Boot-up avatar blur (0.21.0) ───────────────────────────────────
+  //
+  // LemonSlice video element shows up before the agent actually starts
+  // talking. Without a signal for the gap, the avatar looks frozen
+  // (static-ish first frame, no lip-sync) for 1-2s. Blur until first
+  // agentState=speaking, with a 5s safety release for non-greeting
+  // agents.
+
+  describe("boot-up avatar blur", () => {
+    function makeVideo(): HTMLVideoElement {
+      return document.createElement("video");
+    }
+
+    it("applies blur(8px) to the video element on first appearance", () => {
+      const video = makeVideo();
+      const { rerender } = render(
+        <AvatarWidget
+          agentId="t"
+          controlledSession={makeControlledSession()}
+          defaultDisplayMode="expanded"
+        />,
+      );
+      expect(video.style.filter).toBe("");
+
+      rerender(
+        <AvatarWidget
+          agentId="t"
+          controlledSession={makeControlledSession({
+            connectionState: "connected",
+            videoElement: video,
+          })}
+          defaultDisplayMode="expanded"
+        />,
+      );
+      expect(video.style.filter).toBe("blur(8px)");
+    });
+
+    it("clears the blur on first agentState=speaking", () => {
+      const video = makeVideo();
+      const { rerender } = render(
+        <AvatarWidget
+          agentId="t"
+          controlledSession={makeControlledSession({
+            connectionState: "connected",
+            videoElement: video,
+          })}
+          defaultDisplayMode="expanded"
+        />,
+      );
+      expect(video.style.filter).toBe("blur(8px)");
+
+      rerender(
+        <AvatarWidget
+          agentId="t"
+          controlledSession={makeControlledSession({
+            connectionState: "connected",
+            agentState: "speaking",
+            videoElement: video,
+          })}
+          defaultDisplayMode="expanded"
+        />,
+      );
+      expect(video.style.filter).toBe("");
+    });
+
+    it("clears the blur after the 5s safety timeout", () => {
+      vi.useFakeTimers();
+      const video = makeVideo();
+      render(
+        <AvatarWidget
+          agentId="t"
+          controlledSession={makeControlledSession({
+            connectionState: "connected",
+            videoElement: video,
+          })}
+          defaultDisplayMode="expanded"
+        />,
+      );
+      expect(video.style.filter).toBe("blur(8px)");
+
+      act(() => {
+        vi.advanceTimersByTime(5_000);
+      });
+      expect(video.style.filter).toBe("");
+      vi.useRealTimers();
+    });
+
+    it("does not blur when blurUntilFirstSpeech is false", () => {
+      const video = makeVideo();
+      render(
+        <AvatarWidget
+          agentId="t"
+          controlledSession={makeControlledSession({
+            connectionState: "connected",
+            videoElement: video,
+          })}
+          defaultDisplayMode="expanded"
+          blurUntilFirstSpeech={false}
+        />,
+      );
+      expect(video.style.filter).toBe("");
+    });
+  });
+
 });
