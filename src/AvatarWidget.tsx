@@ -294,6 +294,23 @@ export interface AvatarWidgetProps {
   allowTyping?: boolean;
   allowMic?: boolean;
 
+  // ── UX polish ────────────────────────────────────────────────
+  /**
+   * Apply a soft blur (8px) to the avatar video element from the
+   * moment the LemonSlice track subscribes until the worker first
+   * reports `agentState === "speaking"`. Bridges the 1-2s gap where
+   * the avatar is mounted but lip-sync hasn't started yet — without
+   * the blur it reads as a frozen / broken avatar.
+   *
+   * Safety release: 5s after the video element appears, the blur
+   * clears anyway. Handles agents configured to wait for the user
+   * to greet first.
+   *
+   * Default: `true` (0.21.0+). Set to `false` to restore pre-0.21
+   * behavior where the avatar mounted unblurred immediately.
+   */
+  blurUntilFirstSpeech?: boolean;
+
   // ── Chrome toggles ───────────────────────────────────────────
   /**
    * Show the minimize ("—") button in the expanded layout's header.
@@ -595,6 +612,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     allowCamera = true,
     allowScreenShare = true,
     allowTyping = true,
+    blurUntilFirstSpeech = true,
     showMinimize: showMinimizeProp,
     showClose: showCloseProp,
     chromeless = false,
@@ -1629,6 +1647,53 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
       }
     };
   }, [session.videoElement]);
+
+  // ── Boot-up avatar blur ──────────────────────────────────────
+  // 0.21.0: the LemonSlice track subscribes a beat before the agent
+  // actually starts talking. The avatar mounts, the connection state
+  // says "connected", but lip-sync hasn't started yet — visitors read
+  // the 1-2s gap as a frozen avatar. Apply a soft blur on the video
+  // element from the moment it appears until the worker first reports
+  // agentState=speaking. Safety release at 5s for agents configured
+  // to wait for the user (no agent-side speech, so "speaking" never
+  // fires). Reset on disconnect so the next session re-arms.
+  //
+  // Filter is set directly on the video element rather than its
+  // container so this composes with whatever wrapper styling a host
+  // applies — only the property we own is touched.
+  const [hasFirstSpoken, setHasFirstSpoken] = useState(false);
+  useEffect(() => {
+    if (!blurUntilFirstSpeech) {
+      setHasFirstSpoken(true);
+      return;
+    }
+    if (session.agentState === "speaking" && !hasFirstSpoken) {
+      setHasFirstSpoken(true);
+    }
+  }, [blurUntilFirstSpeech, session.agentState, hasFirstSpoken]);
+  useEffect(() => {
+    if (!blurUntilFirstSpeech) return;
+    const cs = session.connectionState;
+    if (cs === "disconnected" || cs === "idle") {
+      setHasFirstSpoken(false);
+    }
+  }, [blurUntilFirstSpeech, session.connectionState]);
+  useEffect(() => {
+    if (!blurUntilFirstSpeech) return;
+    if (!session.videoElement || hasFirstSpoken) return;
+    const timer = setTimeout(() => setHasFirstSpoken(true), 5_000);
+    return () => clearTimeout(timer);
+  }, [blurUntilFirstSpeech, session.videoElement, hasFirstSpoken]);
+  useEffect(() => {
+    const el = session.videoElement;
+    if (!el) return;
+    if (!blurUntilFirstSpeech) {
+      el.style.filter = "";
+      return;
+    }
+    el.style.transition = "filter 500ms ease-out";
+    el.style.filter = hasFirstSpoken ? "" : "blur(8px)";
+  }, [blurUntilFirstSpeech, session.videoElement, hasFirstSpoken]);
 
   // ── Audio element attachment + autoplay check ────────────────
   //
