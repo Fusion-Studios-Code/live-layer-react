@@ -768,7 +768,10 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   const audioLevel = useAudioLevel();
 
   // ── Mic state ────────────────────────────────────────────────
-  const mic = useMicrophoneState();
+  // Hook is initialized further below — moved past `session` so the
+  // boot-up gate (0.20.0) can watch `session.agentState`. Variable name
+  // stays `mic` and first use is the setupMic effect below; keeping the
+  // declaration close to use also reads better.
 
   // ── Camera / screen share / device list ──────────────────────
   const camera = useCameraState();
@@ -1686,6 +1689,20 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     // memoized inside the hook. Safe to omit from deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.audioElement]);
+
+  // ── Mic state ────────────────────────────────────────────────
+  // 0.20.0: opt-in boot-up gate. The hook mutes the freshly-published
+  // mic and holds it muted until `session.agentState` first transitions
+  // to "listening", so the worker's STT doesn't transcribe partial
+  // speech during the connect/greeting window. Released early if the
+  // user clicks the widget mic button (their click wins). In controlled
+  // mode the host (e.g. dashboard V2) owns mic publishing and does its
+  // own gate; the hook's gate is a no-op there because setupMic isn't
+  // called, but passing `agentState` keeps the effect wiring consistent.
+  const mic = useMicrophoneState({
+    gateUntilAgentReady: true,
+    agentState: session.agentState,
+  });
 
   // ── Mic setup on room ready ──────────────────────────────────
   // Mic is only set up for internally-managed sessions — controlled
