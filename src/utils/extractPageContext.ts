@@ -535,18 +535,42 @@ export function extractPageContext(
   return ctx;
 }
 
-// Cache layer (1 second TTL keyed by pathname). Bust on pushState by
-// clearing manually from AvatarWidget.
+// Cache layer (1 second TTL). Keyed by pathname + scrollY + a cheap form
+// signature. The form signature matters on a cold load of a client-rendered
+// page: an SPA commonly mounts its <form> a few hundred ms after the route
+// loads (e.g. behind a preloader), so a page-context read taken during that
+// pre-render gap returns zero forms. Without the signature in the key, that
+// empty snapshot is served back for the full 1s TTL and the agent never sees
+// the form on a cold load — client-side navigation only dodged this because a
+// pathname change calls clearPageContextCache() from AvatarWidget. Computing
+// the signature is far cheaper than the full extractPageContext walk, so
+// gating the cache on it keeps the cache's benefit (rapid repeat reads with an
+// unchanged form set still hit) while staying fresh the moment a form appears.
 let cached: { key: string; at: number; ctx: PageContext } | null = null;
+
+// Cheap structural fingerprint of the page's forms — notices a form
+// mounting/unmounting or gaining/losing fields without doing the full walk.
+function formSignature(doc: Document): string {
+  const forms = doc.querySelectorAll("form");
+  let sig = `f${forms.length}`;
+  forms.forEach((f) => {
+    sig += `|${f.id || f.getAttribute("name") || ""}:${
+      f.querySelectorAll("input,select,textarea").length
+    }`;
+  });
+  return sig;
+}
 
 export function getCachedPageContext(
   extras?: Record<string, unknown>,
   opts: ExtractOptions = {},
 ): PageContext {
   const now = Date.now();
+  const doc = opts.doc ?? (typeof document !== "undefined" ? document : null);
   const path =
     (typeof window !== "undefined" && window.location.pathname) || "/";
-  const key = `${path}::${typeof window !== "undefined" ? window.scrollY : 0}`;
+  const scroll = typeof window !== "undefined" ? window.scrollY : 0;
+  const key = `${path}::${scroll}::${doc ? formSignature(doc) : ""}`;
   if (cached && cached.key === key && now - cached.at < 1000) {
     return cached.ctx;
   }
