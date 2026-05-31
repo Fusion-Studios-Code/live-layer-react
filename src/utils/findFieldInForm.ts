@@ -63,6 +63,86 @@ function fieldKey(el: FillableEl, positionalIdx: number): string {
   );
 }
 
+/** Normalize an identifier or label for tolerant comparison: lowercase, alnum only. */
+function normalizeToken(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+/** Segment after the last dot — drops a "section." namespace prefix
+ *  (opening.preferred_name -> preferred_name). */
+function afterLastDot(s: string): string {
+  const i = s.lastIndexOf(".");
+  return i >= 0 ? s.slice(i + 1) : s;
+}
+
+/** The human label the agent saw in PageContext.forms[].fields[].label —
+ *  associated <label>, wrapping <label>, aria-label, or placeholder. */
+function fieldLabelText(el: FillableEl): string {
+  const id = el.getAttribute("id");
+  if (id) {
+    try {
+      const lbl = el.ownerDocument?.querySelector(
+        `label[for="${id.replace(/"/g, '\\"')}"]`,
+      );
+      if (lbl?.textContent) return lbl.textContent;
+    } catch {
+      /* invalid selector — ignore */
+    }
+  }
+  const wrap = el.closest("label");
+  if (wrap?.textContent) return wrap.textContent;
+  return el.getAttribute("aria-label") || el.getAttribute("placeholder") || "";
+}
+
+/**
+ * Tolerant fallback for when no exact key matched. The agent commonly fills
+ * with the *concept* it collected ("name", "age", "email") rather than the
+ * exact synthesized identifier ("opening.preferred_name"). Rather than force
+ * the LLM to echo opaque strings verbatim, match its key against each field's
+ * name / id / last-dot-segment / label, normalized, and return the best.
+ *
+ * Scoring: an exact normalized match on a field's name, id, or last-dot
+ * segment (score 4) beats a substring/label match (score 2). Runs ONLY after
+ * exact resolution fails, so spec-compliant exact keys are never rerouted.
+ */
+function tolerantMatch(form: HTMLFormElement, key: string): FillableEl | null {
+  const nk = normalizeToken(key);
+  if (nk.length < 2) return null;
+  let best: FillableEl | null = null;
+  let bestScore = 0;
+  for (const el of Array.from(
+    form.querySelectorAll<FillableEl>("input, textarea, select"),
+  )) {
+    if (!isDataInput(el)) continue;
+    const name = el.getAttribute("name") || "";
+    const id = el.getAttribute("id") || "";
+    const exact = [
+      normalizeToken(afterLastDot(name)),
+      normalizeToken(afterLastDot(id)),
+      normalizeToken(name),
+      normalizeToken(id),
+    ];
+    let score = 0;
+    if (exact.some((c) => c.length >= 2 && c === nk)) {
+      score = 4; // last-segment or full normalized equality
+    } else {
+      const fuzzy = [
+        normalizeToken(name),
+        normalizeToken(afterLastDot(name)),
+        normalizeToken(fieldLabelText(el)),
+      ];
+      if (fuzzy.some((c) => c.length >= 3 && (c.includes(nk) || nk.includes(c)))) {
+        score = 2; // substring on name / last-segment / label text
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = el;
+    }
+  }
+  return bestScore >= 2 ? best : null;
+}
+
 /**
  * Resolve the agent's key (whatever it observed in PageContext) back to
  * a DOM element. Returns null if nothing in the form maps to the key.
@@ -112,7 +192,13 @@ export function findFieldInForm(
     seen.set(baseKey, el);
     positionalIdx++;
   }
-  return null;
+
+  // No exact key matched. The agent often fills with the *concept* it
+  // collected ("name", "age") rather than echoing the opaque field
+  // identifier ("opening.preferred_name"). Fall back to tolerant matching by
+  // name / id / last-dot-segment / label so it never has to relay exact
+  // strings — the unopinionated path.
+  return tolerantMatch(form, key);
 }
 
 /**

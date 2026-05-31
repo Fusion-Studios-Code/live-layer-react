@@ -225,6 +225,58 @@ describe("zero-markup form — type/label/placeholder/constraints round-trip", (
   });
 });
 
+describe("findFieldInForm — tolerant semantic matching (agent fills by concept, not exact field name)", () => {
+  it("matches the agent's concept keys to namespaced field names (gullie intake regression)", () => {
+    // The real failure: gullie names fields opening.preferred_name etc., but
+    // the agent fills with the concept it collected ("name", "age"). The
+    // agent should NOT have to echo opaque identifier strings verbatim.
+    const form = makeForm(`
+      <form id="intake-opening">
+        <label for="preferred_name">What should we call you?</label>
+        <input id="preferred_name" name="opening.preferred_name" />
+        <label for="age">How old are you?</label>
+        <input id="age" name="opening.age" type="number" />
+        <label for="occupation">What do you do for work?</label>
+        <input id="occupation" name="opening.occupation" />
+        <label for="interests">What do you like to do for fun?</label>
+        <textarea id="interests" name="opening.interests"></textarea>
+      </form>
+    `);
+    expect(findFieldInForm(form, "name")?.getAttribute("name")).toBe("opening.preferred_name");
+    expect(findFieldInForm(form, "age")?.getAttribute("name")).toBe("opening.age");
+    expect(findFieldInForm(form, "occupation")?.getAttribute("name")).toBe("opening.occupation");
+    expect(findFieldInForm(form, "interests")?.getAttribute("name")).toBe("opening.interests");
+  });
+
+  it("matches by visible label when the field name is opaque (name='q1')", () => {
+    const form = makeForm(`
+      <form>
+        <label for="q1">Your email address</label>
+        <input id="q1" name="q1" type="email" />
+        <label for="q2">Full name</label>
+        <input id="q2" name="q2" />
+      </form>
+    `);
+    expect(findFieldInForm(form, "email")?.getAttribute("name")).toBe("q1");
+    expect(findFieldInForm(form, "name")?.getAttribute("name")).toBe("q2");
+  });
+
+  it("an exact name match still wins over a tolerant one", () => {
+    const form = makeForm(`
+      <form>
+        <input name="nickname" />
+        <input name="name" />
+      </form>
+    `);
+    expect(findFieldInForm(form, "name")?.getAttribute("name")).toBe("name");
+  });
+
+  it("returns null when nothing plausibly matches (no false positive)", () => {
+    const form = makeForm(`<form><input name="email" /></form>`);
+    expect(findFieldInForm(form, "favorite_color")).toBeNull();
+  });
+});
+
 describe("findFillableFieldInForm — privacy filtering", () => {
   it("returns reason=private for password inputs even when the key matches", () => {
     const form = makeForm(`<form><input id="pw" type="password" /></form>`);
