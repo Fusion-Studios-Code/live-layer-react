@@ -84,6 +84,13 @@ export function findFormByLooseId(
     }
   }
 
+  // Last resort: the agent referenced a form we can't resolve — commonly a
+  // generic positional id ("form_0" / "field_0") that doesn't echo this
+  // page's real form id. If exactly ONE fillable host form exists, use it:
+  // single-form pages are the common case and the intent is unambiguous.
+  // Multiple fillable forms stay ambiguous → null (the caller warns).
+  if (forms.length === 1) return forms[0];
+
   return null;
 }
 
