@@ -182,4 +182,23 @@ describe("getCachedPageContext", () => {
     expect(a).not.toBe(b);
     expect(b.visibleText).toContain("Changed");
   });
+
+  it("busts the cache when a form mounts after an empty read (cold-load / late SPA render)", () => {
+    // Reproduces the fssn.co cold-load bug: a client-rendered SPA mounts its
+    // <form> a few hundred ms after the route loads. The agent reads page
+    // context during that pre-render gap and gets zero forms; within the 1s
+    // TTL (same pathname + scrollY) it must NOT be handed back that stale
+    // empty snapshot once the form exists — otherwise it never sees the form
+    // on a cold load. (Navigation dodged this only because a pathname change
+    // clears the cache.)
+    document.body.innerHTML = "<div>Loading…</div>"; // t=0: form not rendered
+    const early = getCachedPageContext();
+    expect(early.forms).toHaveLength(0);
+
+    document.body.innerHTML =
+      '<form id="contact"><input name="email" /><textarea name="message"></textarea></form>';
+    const afterRender = getCachedPageContext();
+    expect(afterRender.forms).toHaveLength(1);
+    expect(afterRender.forms[0].id).toBe("contact");
+  });
 });
