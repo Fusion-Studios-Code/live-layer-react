@@ -24,12 +24,24 @@ export function findFormByLooseId(
   if (!formId) return null;
   const safe = formId.replace(/"/g, '\\"');
 
+  // Never resolve a form the agent must not touch: its own widget DOM
+  // (.ll-widget — e.g. the message composer) or a host opt-out subtree
+  // (data-ll-private / data-ll-skip). Mirrors AvatarWidget's
+  // fill_form/submit_form guard and the extractPageContext discovery
+  // exclusion. Without this, a loose id — especially the positional
+  // `form_<n>` fallback, which skips forms that carry a real id — can land
+  // on the widget's own unnamed form and trip "refusing to touch a private
+  // / opted-out subtree".
+  const offLimits = (form: HTMLFormElement): boolean =>
+    form.closest('[data-ll-private="true"], [data-ll-skip], .ll-widget') !==
+    null;
+
   // 1. Direct id match.
   try {
     const byId = doc.querySelector<HTMLFormElement>(
       `form#${CSS.escape(formId)}`,
     );
-    if (byId) return byId;
+    if (byId && !offLimits(byId)) return byId;
   } catch {
     /* invalid selector — fall through */
   }
@@ -38,15 +50,17 @@ export function findFormByLooseId(
   const byName = doc.querySelector<HTMLFormElement>(
     `form[name="${safe}"]`,
   );
-  if (byName) return byName;
+  if (byName && !offLimits(byName)) return byName;
 
   // 3. data-ll-intent (raw value, then slugged compare).
   const byIntentRaw = doc.querySelector<HTMLFormElement>(
     `form[data-ll-intent="${safe}"]`,
   );
-  if (byIntentRaw) return byIntentRaw;
+  if (byIntentRaw && !offLimits(byIntentRaw)) return byIntentRaw;
 
-  const forms = Array.from(doc.querySelectorAll<HTMLFormElement>("form"));
+  const forms = Array.from(
+    doc.querySelectorAll<HTMLFormElement>("form"),
+  ).filter((form) => !offLimits(form));
   for (const form of forms) {
     const intent = form.getAttribute("data-ll-intent");
     if (intent && intentToSlug(intent) === formId) return form;
