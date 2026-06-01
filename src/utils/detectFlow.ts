@@ -104,15 +104,36 @@ export function detectFlow(doc: Document): FlowContext {
 // A plain nav with an active link matches none of these and is ignored.
 
 const STEP_LABEL_MAX = 60;
-const STEPPER_CLASS_RE = /stepper|wizard|\bsteps?\b|progress/i;
 
 function cleanLabel(s: string): string {
   return s
-    // Drop a leading step number ("1", "1.", "Step 1:") for a cleaner label.
-    .replace(/^\s*(step\s*)?\d+\s*[.):\-]?\s*/i, "")
+    // Strip a leading 1–2 digit step number ("1", "2.", "Step 3:") so the
+    // label reads cleanly — but leave 4-digit years ("2024 Tax Return") and
+    // grouped figures ("10,000 ft view") intact by bounding to 1–2 digits
+    // that are immediately followed by a separator or space.
+    .replace(/^\s*(step\s+)?\d{1,2}(?:[.):\-]+\s*|\s+)/i, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, STEP_LABEL_MAX);
+}
+
+/** A class TOKEN that begins a stepper/wizard name — "step", "steps",
+ *  "stepper", "step-item", "wizard", "wizard-nav". Token-based (via
+ *  classList) so substrings like "three-steps-nav" or "in-progress" do
+ *  NOT qualify a generic nav/list as a stepper. */
+function hasStepperToken(el: Element): boolean {
+  return Array.from(el.classList).some((t) => /^(step|wizard)/i.test(t));
+}
+
+/** A precise "this is the current item" marker. Token-bounded so "inactive"
+ *  / "deactivated" don't count, and aria-current="page" (nav) is excluded —
+ *  only "step"/"true" count as a step-current. */
+function isActiveMarker(el: Element): boolean {
+  const ac = el.getAttribute("aria-current");
+  if (ac === "step" || ac === "true") return true;
+  return Array.from(el.classList).some((t) =>
+    /(^|[-_])(active|current|selected)([-_]|$)/i.test(t),
+  );
 }
 
 function stepperResult(
@@ -129,18 +150,6 @@ function stepperResult(
     currentStep: activeIdx + 1,
     ...(label ? { stepLabel: label } : {}),
   };
-}
-
-/** True when each item's visible text starts with 1, 2, 3… in order. */
-function hasSequentialNumbers(items: Element[]): boolean {
-  let n = 0;
-  for (const it of items) {
-    const m = (it.textContent || "").trim().match(/^(\d+)/);
-    if (!m) return false;
-    if (parseInt(m[1], 10) !== n + 1) return false;
-    n += 1;
-  }
-  return n >= 2;
 }
 
 function detectStepper(doc: Document): {
@@ -173,16 +182,20 @@ function detectStepper(doc: Document): {
     }
   }
 
-  // Signal 3 — an active item whose sibling group looks step-ish. Find an
-  // active marker, treat its siblings as steps, and REQUIRE a stepper signal
-  // (step/wizard/progress class on the group or items, or sequential numbers)
-  // so a plain nav-bar with an ".active" link is rejected.
-  const actives = Array.from(
+  // Signal 3 — an active item whose sibling group is explicitly stepper-
+  // classed. We find current-item candidates, treat their siblings as steps,
+  // and REQUIRE a stepper/wizard class token on the group or its items. This
+  // is the gate that rejects the look-alikes that all have an "active" item
+  // but are NOT wizards: numbered pagination, tab strips, breadcrumbs, nav
+  // bars, task/leaderboard lists. (A genuine numbered stepper that lacks any
+  // step-class token is missed here — acceptable: it still advances via the
+  // detected Continue button, just without step numbers.)
+  const candidates = Array.from(
     doc.querySelectorAll<HTMLElement>(
-      '[aria-current="step"], [class*="active"], [class*="Active"], [class*="current"], [class*="Current"], [class*="selected"], [class*="Selected"]',
+      '[aria-current="step"], [aria-current="true"], [class*="active"], [class*="Active"], [class*="current"], [class*="Current"], [class*="selected"], [class*="Selected"]',
     ),
-  ).filter((el) => !isHidden(el));
-  for (const active of actives) {
+  ).filter((el) => !isHidden(el) && isActiveMarker(el));
+  for (const active of candidates) {
     const parent = active.parentElement;
     if (!parent) continue;
     const items = Array.from(parent.children).filter(
@@ -190,11 +203,7 @@ function detectStepper(doc: Document): {
     );
     const idx = items.indexOf(active);
     if (idx < 0 || items.length < 2 || items.length > 12) continue;
-    const stepSignal =
-      STEPPER_CLASS_RE.test(parent.className) ||
-      items.some((it) => STEPPER_CLASS_RE.test(it.className)) ||
-      hasSequentialNumbers(items);
-    if (!stepSignal) continue;
+    if (!hasStepperToken(parent) && !items.some(hasStepperToken)) continue;
     return stepperResult(items, idx);
   }
 

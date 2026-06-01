@@ -136,4 +136,66 @@ describe("detectFlow — stepper detection", () => {
     expect(flow.totalSteps).toBeUndefined();
     expect(flow.kind).toBe("single-page");
   });
+
+  it("does NOT misread numbered pagination as a stepper", () => {
+    // The most common active+numbered list on the web. Must stay single-page,
+    // even though it has an .active item and sequential numbers.
+    setBody(`
+      <ul class="pagination">
+        <li class="page-item active"><a href="?p=1">1</a></li>
+        <li class="page-item"><a href="?p=2">2</a></li>
+        <li class="page-item"><a href="?p=3">3</a></li>
+      </ul>
+      <main><article>Post</article></main>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBeUndefined();
+    expect(flow.kind).toBe("single-page");
+  });
+
+  it("does NOT misread a task list with a 'in-progress'/'selected' item as a stepper", () => {
+    setBody(`
+      <ul class="in-progress-tasks">
+        <li class="task selected">Design</li>
+        <li class="task">Build</li>
+        <li class="task">Ship</li>
+      </ul>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBeUndefined();
+    expect(flow.kind).toBe("single-page");
+  });
+
+  it("does NOT misread a 'steps'-substring marketing nav as a stepper", () => {
+    setBody(`
+      <nav class="three-steps-nav">
+        <a class="nav-link active" href="/">Home</a>
+        <a class="nav-link" href="/pricing">Pricing</a>
+        <a class="nav-link" href="/docs">Docs</a>
+      </nav>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBeUndefined();
+    expect(flow.kind).toBe("single-page");
+  });
+
+  it("picks the active step, not an 'inactive'-classed sibling", () => {
+    setBody(`
+      <ol class="stepper">
+        <li class="inactive">Account</li>
+        <li class="active">Payment</li>
+        <li class="inactive">Review</li>
+      </ol>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBe(3);
+    expect(flow.currentStep).toBe(2);
+    expect(flow.stepLabel).toBe("Payment");
+  });
+
+  it("keeps a 4-digit year in the step label (does not strip it as a step number)", () => {
+    setBody(`
+      <ol class="stepper">
+        <li aria-current="step">2024 Tax Return</li>
+        <li>Review</li>
+      </ol>`);
+    const flow = detectFlow(document);
+    expect(flow.stepLabel).toBe("2024 Tax Return");
+  });
 });
