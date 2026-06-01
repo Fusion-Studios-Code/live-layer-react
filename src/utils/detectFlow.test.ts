@@ -65,3 +65,75 @@ describe("detectFlow — control detection", () => {
     expect(resolveFlowControl("ll-advance")).toBeNull();
   });
 });
+
+describe("detectFlow — stepper detection", () => {
+  beforeEach(() => setBody(""));
+
+  it("reads an aria-current=step stepper", () => {
+    setBody(`
+      <ol>
+        <li>Getting to know you</li>
+        <li aria-current="step">Your move</li>
+        <li>What you need</li>
+      </ol>
+      <button>Continue</button>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBe(3);
+    expect(flow.currentStep).toBe(2);
+    expect(flow.stepLabel).toBe("Your move");
+    expect(flow.kind).toBe("multi-step");
+  });
+
+  it("reads a numbered stepper with an active class (nav container)", () => {
+    setBody(`
+      <nav>
+        <div class="step active">1 Getting to know you</div>
+        <div class="step">2 Your move</div>
+        <div class="step">3 What you need</div>
+      </nav>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBe(3);
+    expect(flow.currentStep).toBe(1);
+    expect(flow.stepLabel).toContain("Getting to know you");
+  });
+
+  it("reads a role=progressbar stepper", () => {
+    setBody(`<div role="progressbar" aria-valuenow="2" aria-valuemax="4" aria-valuetext="Step 2: Your move"></div>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBe(4);
+    expect(flow.currentStep).toBe(2);
+    expect(flow.stepLabel).toBe("Your move");
+  });
+
+  it("is multi-step via a high-confidence stepper even with no advance button", () => {
+    setBody(`<ol><li aria-current="step">A</li><li>B</li></ol>`);
+    const flow = detectFlow(document);
+    expect(flow.kind).toBe("multi-step");
+    expect(flow.totalSteps).toBe(2);
+    expect(flow.currentStep).toBe(1);
+  });
+
+  it("does NOT misread an ordinary nav bar with an active link as a stepper", () => {
+    // The critical false-positive guard: a normal site nav has an ".active"
+    // link but no step/wizard/progress class and no sequential numbers, so it
+    // must stay single-page (no totalSteps).
+    setBody(`
+      <nav class="navbar">
+        <a class="nav-link active" href="/">Home</a>
+        <a class="nav-link" href="/about">About</a>
+        <a class="nav-link" href="/contact">Contact</a>
+      </nav>
+      <main><p>Welcome</p></main>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBeUndefined();
+    expect(flow.currentStep).toBeUndefined();
+    expect(flow.kind).toBe("single-page");
+  });
+
+  it("does not treat a generic ordered list with an active item but no step signal as a stepper", () => {
+    setBody(`<ol><li class="active">Apples</li><li>Oranges</li><li>Pears</li></ol>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBeUndefined();
+    expect(flow.kind).toBe("single-page");
+  });
+});
