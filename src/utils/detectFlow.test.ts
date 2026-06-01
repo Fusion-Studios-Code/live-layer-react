@@ -84,17 +84,43 @@ describe("detectFlow — stepper detection", () => {
     expect(flow.kind).toBe("multi-step");
   });
 
-  it("reads a numbered stepper with an active class (nav container)", () => {
+  it("reads a numbered stepper inside a .stepper container", () => {
     setBody(`
-      <nav>
+      <div class="stepper">
         <div class="step active">1 Getting to know you</div>
         <div class="step">2 Your move</div>
         <div class="step">3 What you need</div>
-      </nav>`);
+      </div>`);
     const flow = detectFlow(document);
     expect(flow.totalSteps).toBe(3);
     expect(flow.currentStep).toBe(1);
     expect(flow.stepLabel).toContain("Getting to know you");
+  });
+
+  it("detects a Material-UI (MuiStepper) stepper with a nested active label", () => {
+    setBody(`
+      <div class="MuiStepper-root MuiStepper-horizontal">
+        <div class="MuiStep-root"><span class="MuiStepLabel-root">Account</span></div>
+        <div class="MuiStep-root"><span class="MuiStepLabel-root Mui-active">Payment</span></div>
+        <div class="MuiStep-root"><span class="MuiStepLabel-root">Review</span></div>
+      </div>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBe(3);
+    expect(flow.currentStep).toBe(2);
+    expect(flow.stepLabel).toBe("Payment");
+  });
+
+  it("detects an Ant Design (ant-steps) stepper", () => {
+    setBody(`
+      <div class="ant-steps ant-steps-horizontal">
+        <div class="ant-steps-item ant-steps-item-finish"><div class="ant-steps-item-content">Account</div></div>
+        <div class="ant-steps-item ant-steps-item-active"><div class="ant-steps-item-content">Payment</div></div>
+        <div class="ant-steps-item ant-steps-item-wait"><div class="ant-steps-item-content">Review</div></div>
+      </div>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBe(3);
+    expect(flow.currentStep).toBe(2);
+    expect(flow.stepLabel).toBe("Payment");
   });
 
   it("reads a role=progressbar stepper", () => {
@@ -164,13 +190,37 @@ describe("detectFlow — stepper detection", () => {
     expect(flow.kind).toBe("single-page");
   });
 
-  it("does NOT misread a 'steps'-substring marketing nav as a stepper", () => {
+  it("does NOT misread a 'steps'-substring marketing nav as a stepper (hyphenated)", () => {
     setBody(`
       <nav class="three-steps-nav">
         <a class="nav-link active" href="/">Home</a>
         <a class="nav-link" href="/pricing">Pricing</a>
         <a class="nav-link" href="/docs">Docs</a>
       </nav>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBeUndefined();
+    expect(flow.kind).toBe("single-page");
+  });
+
+  it("does NOT misread a 'steps'-substring marketing nav as a stepper (space-separated tokens)", () => {
+    setBody(`
+      <nav class="three steps nav">
+        <a class="nav-link active" href="/">Home</a>
+        <a class="nav-link" href="/pricing">Pricing</a>
+        <a class="nav-link" href="/docs">Docs</a>
+      </nav>`);
+    const flow = detectFlow(document);
+    expect(flow.totalSteps).toBeUndefined();
+    expect(flow.kind).toBe("single-page");
+  });
+
+  it("does NOT misread a generic '.step' utility-class card grid as a stepper", () => {
+    setBody(`
+      <div class="cards">
+        <div class="step active">Basic</div>
+        <div class="step">Pro</div>
+        <div class="step">Enterprise</div>
+      </div>`);
     const flow = detectFlow(document);
     expect(flow.totalSteps).toBeUndefined();
     expect(flow.kind).toBe("single-page");

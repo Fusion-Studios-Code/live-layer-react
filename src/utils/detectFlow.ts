@@ -117,12 +117,22 @@ function cleanLabel(s: string): string {
     .slice(0, STEP_LABEL_MAX);
 }
 
-/** A class TOKEN that begins a stepper/wizard name — "step", "steps",
- *  "stepper", "step-item", "wizard", "wizard-nav". Token-based (via
- *  classList) so substrings like "three-steps-nav" or "in-progress" do
- *  NOT qualify a generic nav/list as a stepper. */
-function hasStepperToken(el: Element): boolean {
-  return Array.from(el.classList).some((t) => /^(step|wizard)/i.test(t));
+function classOf(el: Element): string {
+  const c = el.getAttribute("class");
+  return c ? c.toLowerCase() : "";
+}
+
+// Component-specific signatures that name a stepper/wizard CONTAINER —
+// "MuiStepper-root", "ant-steps", "bs-stepper", "step-indicator", "wizard".
+// Deliberately NOT a generic "step"/"steps" token, so "three-steps-nav",
+// "three steps nav", "pagination", "in-progress-tasks", and lone ".step"
+// utility classes do NOT qualify. Tradeoff: a fully-custom stepper with no
+// recognizable class is missed — acceptable, it still advances via the
+// detected Continue button (just without step numbers).
+const STEPPER_CONTAINER_RE = /stepper|wizard|ant-steps|step-indicator/;
+
+function isStepperContainer(el: Element): boolean {
+  return STEPPER_CONTAINER_RE.test(classOf(el));
 }
 
 /** A precise "this is the current item" marker. Token-bounded so "inactive"
@@ -133,6 +143,19 @@ function isActiveMarker(el: Element): boolean {
   if (ac === "step" || ac === "true") return true;
   return Array.from(el.classList).some((t) =>
     /(^|[-_])(active|current|selected)([-_]|$)/i.test(t),
+  );
+}
+
+const ACTIVE_DESCENDANT_SEL =
+  '[aria-current="step"],[aria-current="true"],[class*="active"],[class*="Active"],[class*="current"],[class*="Current"],[class*="selected"],[class*="Selected"]';
+
+/** A step item is "current" if it — or a descendant — carries a precise active
+ *  marker. The descendant check handles MUI/AntD, which put the active class
+ *  on a label nested inside the step (`<Step><StepLabel class="Mui-active">`). */
+function itemIsActive(it: Element): boolean {
+  if (isActiveMarker(it)) return true;
+  return Array.from(it.querySelectorAll(ACTIVE_DESCENDANT_SEL)).some(
+    isActiveMarker,
   );
 }
 
@@ -182,28 +205,28 @@ function detectStepper(doc: Document): {
     }
   }
 
-  // Signal 3 — an active item whose sibling group is explicitly stepper-
-  // classed. We find current-item candidates, treat their siblings as steps,
-  // and REQUIRE a stepper/wizard class token on the group or its items. This
-  // is the gate that rejects the look-alikes that all have an "active" item
-  // but are NOT wizards: numbered pagination, tab strips, breadcrumbs, nav
-  // bars, task/leaderboard lists. (A genuine numbered stepper that lacks any
-  // step-class token is missed here — acceptable: it still advances via the
-  // detected Continue button, just without step numbers.)
-  const candidates = Array.from(
+  // Signal 3 — a stepper/wizard-CLASSED container (container-first). Match
+  // only specific component signatures (stepper / wizard / ant-steps /
+  // step-indicator), so pagination, tab strips, breadcrumbs, nav bars,
+  // task lists, and lone ".step" utility classes are excluded. Each direct
+  // child is a step; the active one is found by climbing into the item
+  // (libraries nest the active marker on a label inside the step).
+  // The broad `[class*="step"/"wizard"]` query is narrowed by
+  // `isStepperContainer`; it also matches step ITEMS (e.g. "ant-steps-item"),
+  // which harmlessly fail the >=2-children test and fall through to the real
+  // container that appears earlier in document order.
+  const containers = Array.from(
     doc.querySelectorAll<HTMLElement>(
-      '[aria-current="step"], [aria-current="true"], [class*="active"], [class*="Active"], [class*="current"], [class*="Current"], [class*="selected"], [class*="Selected"]',
+      '[class*="step"], [class*="Step"], [class*="wizard"], [class*="Wizard"]',
     ),
-  ).filter((el) => !isHidden(el) && isActiveMarker(el));
-  for (const active of candidates) {
-    const parent = active.parentElement;
-    if (!parent) continue;
-    const items = Array.from(parent.children).filter(
+  ).filter((el) => !isHidden(el) && isStepperContainer(el));
+  for (const container of containers) {
+    const items = Array.from(container.children).filter(
       (c) => !isHidden(c) && (c.textContent || "").trim().length > 0,
     );
-    const idx = items.indexOf(active);
-    if (idx < 0 || items.length < 2 || items.length > 12) continue;
-    if (!hasStepperToken(parent) && !items.some(hasStepperToken)) continue;
+    if (items.length < 2 || items.length > 12) continue;
+    const idx = items.findIndex(itemIsActive);
+    if (idx < 0) continue;
     return stepperResult(items, idx);
   }
 
