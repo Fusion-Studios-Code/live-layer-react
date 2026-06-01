@@ -1,6 +1,6 @@
 {
   "name": "@livelayer/react",
-  "version": "0.21.4",
+  "version": "0.22.0",
   "description": "LiveLayer agent widget for React — avatar video, team switching, responsive layouts, full-fidelity embed",
   "keywords": [
     "livelayer",
