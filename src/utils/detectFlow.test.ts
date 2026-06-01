@@ -36,6 +36,18 @@ describe("detectFlow — control detection", () => {
     expect(flow.advance).toBeUndefined();
   });
 
+  it("ignores controls inside the widget's own chrome (.ll-widget)", () => {
+    setBody(`<div class="ll-widget"><button>End call</button><button>Continue</button></div><button id="host">Continue</button>`);
+    detectFlow(document);
+    expect(resolveFlowControl("ll-advance")).toBe(document.getElementById("host"));
+  });
+
+  it("does not treat a typeless button outside a form as submit", () => {
+    setBody(`<header><button>Login</button></header>`);
+    const flow = detectFlow(document);
+    expect(flow.submit).toBeUndefined();
+  });
+
   it("returns single-page when there is no advance/stepper", () => {
     setBody(`<form><input name="a" /><button type="submit">Send</button></form>`);
     const flow = detectFlow(document);

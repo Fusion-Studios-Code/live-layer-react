@@ -5,6 +5,7 @@
 // control by id without a fragile CSS selector crossing the wire.
 
 import type { FlowContext, FlowControl } from "../types";
+import { hasPrivateAncestor } from "./fieldPrivacy";
 
 const ADVANCE_RE = /\b(continue|next|proceed|move\s*on|forward)\b|→|›/i;
 const BACK_RE = /\b(back|previous|prev|go\s*back)\b|←|‹/i;
@@ -19,7 +20,9 @@ export function resolveFlowControl(id: string): Element | null {
 }
 
 function isHidden(el: Element): boolean {
-  if (el.closest("[data-ll-private], [data-ll-skip]")) return true;
+  // Excludes [data-ll-private], [data-ll-skip], AND the widget's own
+  // .ll-widget chrome — same exclusion every DOM scraper here uses.
+  if (hasPrivateAncestor(el)) return true;
   if ((el as HTMLElement).hidden) return true;
   if (el.getAttribute("aria-hidden") === "true") return true;
   const cs =
@@ -68,7 +71,9 @@ export function detectFlow(doc: Document): FlowContext {
     if (!text || text.length > 40) continue;
     const isSubmitEl =
       el.getAttribute("type") === "submit" ||
-      (el.tagName === "BUTTON" && !el.getAttribute("type"));
+      (el.tagName === "BUTTON" &&
+        !el.getAttribute("type") &&
+        !!el.closest("form"));
 
     if (!advance && ADVANCE_RE.test(text) && !BACK_RE.test(text)) {
       advance = { id: "ll-advance", label: text };
