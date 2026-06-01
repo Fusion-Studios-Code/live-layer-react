@@ -162,6 +162,7 @@ import {
 import { findFillableFieldInForm } from "./utils/findFieldInForm";
 import { fillField } from "./utils/fillField";
 import { findFormByLooseId } from "./utils/findFormByLooseId";
+import { detectFlow, resolveFlowControl } from "./utils/detectFlow";
 import {
   pickScrollContainer,
   getViewportHeight,
@@ -200,6 +201,11 @@ const UNIVERSAL_COMMAND_TYPES = new Set([
   "focus_field",
   "submit_form",
   "request_routes",
+  // 0.22.0 — multi-step flow controls (handled internally via the flow
+  // registry; see detectFlow). Not bubbled to onAgentCommand.
+  "advance_step",
+  "go_back",
+  "submit_flow",
   // 0.12.0 — structured collection (unified API).
   // Both `task_field_updated` and `task_completed` data-channel commands
   // fan out into a single document-level `ll-collected` CustomEvent
@@ -1143,6 +1149,41 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           console.warn(
             `[LiveLayer] click: refusing to click element inside a private subtree.`,
           );
+          return;
+        }
+        (el as HTMLElement).click?.();
+        return;
+      }
+
+      if (
+        cmd.type === "advance_step" ||
+        cmd.type === "go_back" ||
+        cmd.type === "submit_flow"
+      ) {
+        // Multi-step flow controls. Gated under the same capability as a
+        // manual click — these ARE clicks on a detected Continue/Back/Submit
+        // button, triggered by id through the flow registry (no selector
+        // crosses the wire). See detectFlow / FlowContext.
+        if (!isAllowed("click")) {
+          blockedWarn(cmd.type, "click");
+          return;
+        }
+        if (typeof document === "undefined") return;
+        const id =
+          cmd.type === "advance_step"
+            ? "ll-advance"
+            : cmd.type === "go_back"
+              ? "ll-back"
+              : "ll-submit";
+        // Resolve from the live registry; re-detect once if stale (the DOM
+        // may have changed since the last extractPageContext ran).
+        let el: Element | null = resolveFlowControl(id);
+        if (!el) {
+          detectFlow(document);
+          el = resolveFlowControl(id);
+        }
+        if (!el) {
+          console.warn(`[LiveLayer] ${cmd.type}: no "${id}" control found.`);
           return;
         }
         (el as HTMLElement).click?.();

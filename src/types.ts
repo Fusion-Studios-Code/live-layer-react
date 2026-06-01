@@ -69,6 +69,31 @@ export type RoutePattern = string | RegExp | ((pathname: string) => boolean);
 
 // ── Page context (extractPageContext) ────────────────────────────────────
 
+/** A single actionable flow control (Continue / Back / Submit) the agent can trigger. */
+export interface FlowControl {
+  /** Stable logical id the SDK maps back to a live DOM node ("ll-advance" | "ll-back" | "ll-submit"). */
+  id: string;
+  /** Human label for the agent, e.g. "Continue". */
+  label: string;
+}
+
+/** Runtime-inferred multi-step (wizard) structure of the current page. */
+export interface FlowContext {
+  kind: "multi-step" | "single-page";
+  /** 1-based, best-effort (undefined when the stepper is unreadable). */
+  currentStep?: number;
+  /** best-effort total step count. */
+  totalSteps?: number;
+  /** current step's label, e.g. "Getting to know you". */
+  stepLabel?: string;
+  /** forward control if present on the current view. */
+  advance?: FlowControl;
+  /** backward control if present. */
+  back?: FlowControl;
+  /** final-step submit control if present (distinct from `advance`). */
+  submit?: FlowControl;
+}
+
 /**
  * Snapshot of what the user is currently looking at, sent to the agent in
  * response to a `request_page_context` command.
@@ -151,6 +176,8 @@ export interface PageContext {
   }>;
   /** Free-form metadata bag from the consumer's pageContextExtras prop. */
   extras?: Record<string, unknown>;
+  /** Runtime-inferred wizard structure; absent on a plain single-page form. */
+  flow?: FlowContext;
 }
 
 // ── Capabilities (0.4.0) ─────────────────────────────────────────────────

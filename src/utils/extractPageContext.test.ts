@@ -202,3 +202,29 @@ describe("getCachedPageContext", () => {
     expect(afterRender.forms[0].id).toBe("contact");
   });
 });
+
+describe("extractPageContext — flow block (A4 wiring)", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("includes a multi-step flow when a stepper + Continue are present", () => {
+    document.body.innerHTML = `
+      <ol>
+        <li aria-current="step">Getting to know you</li>
+        <li>Your move</li>
+      </ol>
+      <form><input name="name" /></form>
+      <button>Continue</button>`;
+    const ctx = extractPageContext();
+    expect(ctx.flow?.kind).toBe("multi-step");
+    expect(ctx.flow?.advance?.label).toBe("Continue");
+    expect(ctx.flow?.currentStep).toBe(1);
+    expect(ctx.flow?.totalSteps).toBe(2);
+  });
+
+  it("reports a single-page flow for a plain form", () => {
+    document.body.innerHTML = `<form><input name="a" /><button type="submit">Send</button></form>`;
+    expect(extractPageContext().flow?.kind).toBe("single-page");
+  });
+});

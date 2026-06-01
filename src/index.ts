@@ -33,6 +33,8 @@ export type {
   BrandingConfig,
   RoutePattern,
   PageContext,
+  FlowContext,
+  FlowControl,
   AgentCapability,
 } from "./types";
 

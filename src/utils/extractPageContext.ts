@@ -21,6 +21,7 @@
 
 import type { PageContext } from "../types";
 import { isFieldFillable, hasPrivateAncestor } from "./fieldPrivacy";
+import { detectFlow } from "./detectFlow";
 
 const MAX_OUTPUT_BYTES = 4096;
 const MAX_LINKS = 20;
@@ -511,6 +512,7 @@ export function extractPageContext(
     visibleLinks,
     visibleFields,
     forms: formsArr,
+    flow: detectFlow(doc),
     extras,
   };
 
