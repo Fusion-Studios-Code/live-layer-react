@@ -772,4 +772,59 @@ describe("AvatarWidget (controlledSession API)", () => {
     });
   });
 
+  // ─── Multi-step flow commands (0.22.0) ──────────────────────────────
+  describe("flow commands", () => {
+    function renderWithSubscriber() {
+      let subscriber: ((msg: Record<string, unknown>) => void) | null = null;
+      render(
+        <AvatarWidget
+          agentId="test-agent"
+          controlledSession={makeControlledSession({
+            subscribeToDataMessages: (cb) => {
+              subscriber = cb;
+              return () => {};
+            },
+          })}
+        />,
+      );
+      return () => subscriber;
+    }
+
+    it("advance_step clicks the detected Continue control", () => {
+      document.body.innerHTML = `<button id="cta">Continue</button>`;
+      const getSub = renderWithSubscriber();
+      const btn = document.getElementById("cta")!;
+      const clicked = vi.fn();
+      btn.addEventListener("click", clicked);
+
+      act(() => {
+        getSub()!({ type: "advance_step" });
+      });
+      expect(clicked).toHaveBeenCalledTimes(1);
+    });
+
+    it("submit_flow clicks the detected submit control", () => {
+      document.body.innerHTML = `<form><input name="a" /><button type="submit" id="sub">Finish</button></form>`;
+      const getSub = renderWithSubscriber();
+      const btn = document.getElementById("sub")!;
+      const clicked = vi.fn();
+      btn.addEventListener("click", clicked);
+
+      act(() => {
+        getSub()!({ type: "submit_flow" });
+      });
+      expect(clicked).toHaveBeenCalledTimes(1);
+    });
+
+    it("advance_step is a no-op (no throw) when there is no Continue control", () => {
+      document.body.innerHTML = `<main><p>Just text</p></main>`;
+      const getSub = renderWithSubscriber();
+      expect(() =>
+        act(() => {
+          getSub()!({ type: "advance_step" });
+        }),
+      ).not.toThrow();
+    });
+  });
+
 });
