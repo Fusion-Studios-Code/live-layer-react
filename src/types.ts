@@ -170,6 +170,15 @@ export interface PageContext {
       autocomplete?: string;
       /** Choices for <select> fields. Capped at 20 per field. */
       options?: Array<{ value: string; label: string }>;
+      /**
+       * Label of a <select>'s placeholder option (e.g. "Select a subject").
+       * Present when the select has an empty-value/disabled placeholder —
+       * treat such a select as REQUIRED-to-choose even if the host omitted
+       * the HTML5 `required` attribute (JS-validated forms).
+       */
+      placeholderOption?: string;
+      /** True when a <select> has an empty-value/placeholder option. */
+      hasEmptyOption?: boolean;
       /** Live HTML5 validation error (omitted when field is valid). */
       validationMessage?: string;
     }>;

@@ -1335,10 +1335,70 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
             // best effort
           }
         };
+        // Collect the names of fields failing native HTML5 validation so
+        // the agent can name the offending field(s) instead of guessing.
+        const fieldLabel = (el: Element): string => {
+          const e = el as HTMLInputElement;
+          const al = e.getAttribute?.("aria-label");
+          if (al) return al;
+          const id = e.id;
+          if (id) {
+            const lab = form.ownerDocument?.querySelector(`label[for="${id}"]`);
+            if (lab?.textContent?.trim()) return lab.textContent.trim();
+          }
+          return e.getAttribute?.("name") || e.id || e.type || "field";
+        };
+        const collectInvalid = (): string[] => {
+          try {
+            return Array.from(form.elements as ArrayLike<Element>)
+              .filter(
+                (el) =>
+                  "willValidate" in el &&
+                  (el as HTMLInputElement).willValidate &&
+                  !(el as HTMLInputElement).checkValidity(),
+              )
+              .map((el) => `${fieldLabel(el)}: ${(el as HTMLInputElement).validationMessage}`);
+          } catch {
+            return [];
+          }
+        };
+        // HTML5 pre-check: if native constraints are unmet, surface them by
+        // name and do NOT submit. (For JS-only validated forms this passes
+        // and the defaultPrevented check below is what catches them.)
+        if (typeof form.checkValidity === "function" && !form.checkValidity()) {
+          try {
+            (form as HTMLFormElement).reportValidity?.();
+          } catch {
+            // best effort
+          }
+          publishResp({
+            type: "form_submit_blocked",
+            formId,
+            reason: "validation",
+            invalidFields: collectInvalid(),
+          });
+          return;
+        }
+        // The submit event firing is NOT proof the form was actually sent.
+        // React / SPA handlers call e.preventDefault() AFTER the native
+        // submit event has already reached this (form-target) listener —
+        // React delegates submit to the root container, whose listener runs
+        // after ours. So read e.defaultPrevented on a microtask: if the SPA
+        // cancelled the native submit, the page handled it client-side and
+        // we CANNOT confirm success (its own JS validation may have rejected
+        // it — e.g. a required dropdown left unset). Report uncertain in that
+        // case; only a genuine un-prevented native submit (real POST /
+        // navigation) counts as confirmed success.
         let fired = false;
-        const onSubmit = () => {
+        const onSubmit = (e: Event) => {
           fired = true;
-          publishResp({ type: "form_submitted", formId });
+          queueMicrotask(() => {
+            if (e.defaultPrevented) {
+              publishResp({ type: "form_submit_uncertain", formId, reason: "spa_prevented" });
+            } else {
+              publishResp({ type: "form_submitted", formId });
+            }
+          });
         };
         form.addEventListener("submit", onSubmit, { once: true });
         try {
@@ -1357,8 +1417,8 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           });
           return;
         }
-        // Give the browser a tick for validation + submit. If the
-        // submit event hasn't fired by then, treat as blocked.
+        // If the submit event never fires (HTML5 constraint suppressed it),
+        // treat as blocked and name the invalid field(s).
         setTimeout(() => {
           if (!fired) {
             form.removeEventListener("submit", onSubmit);
@@ -1366,6 +1426,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
               type: "form_submit_blocked",
               formId,
               reason: "validation",
+              invalidFields: collectInvalid(),
             });
           }
         }, 500);

@@ -731,6 +731,17 @@
   font-family: inherit;
 }
 
+/* Connecting / warming overlay — must FULLY hide the static portrait
+   behind it until the live, talking avatar is revealed. The base 0.35
+   scrim let a sharp still bleed through, so during boot the visitor saw a
+   frozen, background-less portrait ("we're looking at a still image").
+   Near-opaque + strong blur so nothing shows until the agent speaks. */
+.ll-expanded__overlay--connecting {
+  background: rgba(13, 13, 13, 0.94);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+
 .ll-expanded__overlay--gesture {
   cursor: pointer;
   background: rgba(0, 0, 0, 0.5);

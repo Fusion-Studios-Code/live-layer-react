@@ -476,12 +476,24 @@ export function extractPageContext(
       if (el instanceof HTMLSelectElement) {
         const opts: Array<{ value: string; label: string }> = [];
         for (let i = 0; i < el.options.length; i++) {
-          if (opts.length >= MAX_OPTIONS_PER_FIELD) break;
           const o = el.options[i];
           if (!o) continue;
-          // Drop the disabled placeholder ("Select a subject...") so the
-          // agent doesn't offer it back as a real choice.
-          if (o.disabled) continue;
+          // A placeholder option (empty value and/or disabled — e.g.
+          // "Select a subject…") signals this select is a REQUIRED choice
+          // even when the host omits the HTML5 `required` attribute (common
+          // on JS-validated React forms like fssn.co's contact form).
+          // Capture its label as a hint BEFORE dropping it, so the agent
+          // knows it must pick a real option. We never read the select's
+          // current value (privacy), so this is the only signal available.
+          if (o.value === "" || o.disabled) {
+            const ph = (o.textContent || "").trim();
+            if (ph && !entry.placeholderOption) {
+              entry.placeholderOption = clampString(ph, 60);
+            }
+            entry.hasEmptyOption = true;
+            if (o.disabled) continue; // don't offer the placeholder as a choice
+          }
+          if (opts.length >= MAX_OPTIONS_PER_FIELD) break;
           const value = o.value || "";
           const optLabel = (o.textContent || "").trim() || value;
           if (!value && !optLabel) continue;
