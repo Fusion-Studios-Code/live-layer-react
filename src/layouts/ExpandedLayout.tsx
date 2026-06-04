@@ -234,24 +234,45 @@ export const ExpandedLayout: FC<Props> = ({
     };
   }, [agentVideoEl]);
 
-  // 8s bail covers a generous LemonSlice warmup with margin; if we still
-  // don't have video by then the agent is probably voice-only or the
-  // pipeline failed, and stranding on a spinner is worse than revealing
-  // the portrait.
+  // Reveal the avatar ONLY once the agent has actually started SPEAKING.
+  // The room reaches "connected" and the agent reports "listening" (and
+  // LemonSlice may even push idle video frames) several seconds before the
+  // agent says its first word. Dropping the overlay at that point revealed a
+  // frozen, silent portrait — "we're looking at a still image". Track first
+  // speech; once true it stays true until the session ends.
+  const [hasSpoken, setHasSpoken] = useState(false);
+  useEffect(() => {
+    if (agentState === "speaking") setHasSpoken(true);
+  }, [agentState]);
+  useEffect(() => {
+    if (connectionState === "disconnected" || connectionState === "idle") {
+      setHasSpoken(false);
+    }
+  }, [connectionState]);
+
+  // The avatar is "ready to show" only when it's both speaking AND its video
+  // is playing frames — i.e. the talking avatar, not a frozen portrait.
+  const avatarTalkingReady = hasSpoken && agentVideoReady;
+
+  // Bail covers warmup + greeting with margin; if the agent still hasn't
+  // spoken by then (voice-only / no-greeting agent, or a stalled pipeline)
+  // revealing the portrait beats stranding on a spinner forever.
   const [warmupBailedOut, setWarmupBailedOut] = useState(false);
   useEffect(() => {
     if (!isConnected) {
       setWarmupBailedOut(false);
       return;
     }
-    if (agentVideoReady) return;
-    const t = setTimeout(() => setWarmupBailedOut(true), 8000);
+    if (avatarTalkingReady) return;
+    const t = setTimeout(() => setWarmupBailedOut(true), 12000);
     return () => clearTimeout(t);
-  }, [isConnected, agentVideoReady]);
+  }, [isConnected, avatarTalkingReady]);
 
+  // Keep the connecting/loading overlay up until the avatar is actually
+  // talking (or we bail) — never reveal a silent still during "listening".
   const showConnectingOverlay =
     connectionState === "connecting" ||
-    (isConnected && !!avatarImageUrl && !agentVideoReady && !warmupBailedOut);
+    (isConnected && !avatarTalkingReady && !warmupBailedOut);
 
   // Local camera / screen PIP host — we append the LiveKit-produced <video>
   // into these divs so the orchestrator retains ownership of the elements
