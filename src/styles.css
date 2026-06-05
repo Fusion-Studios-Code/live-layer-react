@@ -731,17 +731,14 @@
   font-family: inherit;
 }
 
-/* Connecting / warming overlay — must FULLY hide the static portrait
-   behind it until the live, talking avatar is revealed. The base 0.35
-   scrim let a sharp still bleed through, so during boot the visitor saw a
-   frozen, background-less portrait ("we're looking at a still image").
-   Near-opaque + strong blur so nothing shows until the agent speaks. */
-.ll-expanded__overlay--connecting {
-  background: rgba(13, 13, 13, 0.94);
-  -webkit-backdrop-filter: blur(18px);
-  backdrop-filter: blur(18px);
-}
-
+/* Connecting / warming overlay — keep it LIGHT so the composite portrait
+   (agent + real background, sourced via resolveAvatarStillUrl) stays
+   visible underneath while we boot. An opaque scrim here blanked the whole
+   connecting screen — the visitor expects to see the composed avatar until
+   the agent actually starts talking, at which point the live video is
+   revealed. So we inherit only the base .ll-expanded__overlay scrim (0.35 +
+   blur 2px): enough to seat the spinner/caption, not enough to hide the
+   avatar. The reveal is gated on first "speaking" in ExpandedLayout. */
 .ll-expanded__overlay--gesture {
   cursor: pointer;
   background: rgba(0, 0, 0, 0.5);
