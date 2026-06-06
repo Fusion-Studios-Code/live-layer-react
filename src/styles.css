@@ -1317,6 +1317,20 @@
   border-color: rgba(255, 140, 140, 0.7);
 }
 
+/* Compact (mobile) 3-button toolbar: mic · ••• · End. The base .ll-toolbar
+   packs 5 controls centered with a tight 2px gap, and .ll-tool--danger adds
+   margin-left:6px to separate End from the media cluster. In this 3-button row
+   that asymmetric margin pushed End ~8px right while the others sat 2px apart,
+   knocking ••• off-center and leaving an outsized gap before End. Distribute
+   the three evenly across the row and drop the margin so they're balanced.
+   (Same component renders on the marketing site, so this fixes both.) */
+.ll-toolbar--compact {
+  justify-content: space-evenly;
+}
+.ll-toolbar--compact .ll-tool--danger {
+  margin-left: 0;
+}
+
 /* Split button: left = toggle, right = device menu */
 .ll-tool-split {
   position: relative;
