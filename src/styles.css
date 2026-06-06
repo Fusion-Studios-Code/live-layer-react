@@ -649,7 +649,20 @@
 }
 
 .ll-expanded__bg { z-index: 0; }
-.ll-expanded__video { z-index: 1; pointer-events: none; }
+
+/* Live talking-head sits above the composite poster. Hidden until the
+   LemonSlice stream pushes real frames (data-ready, set from agentVideoReady
+   in ExpandedLayout) so a frame-less black <video> never flashes over the
+   poster during the voice-first greeting. Fades in over the still. */
+.ll-expanded__video {
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.45s ease;
+}
+.ll-expanded__video[data-ready="true"] {
+  opacity: 1;
+}
 
 .ll-expanded__video > video {
   width: 100%;

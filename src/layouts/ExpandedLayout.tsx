@@ -250,29 +250,36 @@ export const ExpandedLayout: FC<Props> = ({
     }
   }, [connectionState]);
 
-  // The avatar is "ready to show" only when it's both speaking AND its video
-  // is playing frames — i.e. the talking avatar, not a frozen portrait.
-  const avatarTalkingReady = hasSpoken && agentVideoReady;
+  // Drop the connecting overlay the moment the agent STARTS SPEAKING — even if
+  // the LemonSlice video hasn't published its first frame yet. The greeting now
+  // plays on the agent's direct audio (voice-first, ~1-2s) while the talking-
+  // head renders in the background (~10s of LemonSlice cold-start). The old gate
+  // held the "Connecting…" spinner + blur over the ENTIRE greeting (it waited
+  // for hasSpoken AND agentVideoReady), so the agent looked stuck mid-sentence
+  // with a blurred caption. Instead, reveal the crisp composite portrait +
+  // caption as soon as it talks; the live video cross-fades in over the still
+  // when its frames arrive (see .ll-expanded__video opacity, gated on
+  // agentVideoReady). Mirrors the reference demo's clean voice-first boot.
+  // We still do NOT reveal on mere "connected"/"listening" (a silent still) —
+  // only once it has actually spoken.
 
-  // Bail covers warmup + greeting with margin; if the agent still hasn't
-  // spoken by then (voice-only / no-greeting agent, or a stalled pipeline)
-  // revealing the portrait beats stranding on a spinner forever.
+  // Bail covers the case where the agent never reports "speaking" (voice-only
+  // agent with no greeting, or a stalled pipeline): reveal the portrait after a
+  // margin rather than stranding on the spinner forever.
   const [warmupBailedOut, setWarmupBailedOut] = useState(false);
   useEffect(() => {
     if (!isConnected) {
       setWarmupBailedOut(false);
       return;
     }
-    if (avatarTalkingReady) return;
+    if (hasSpoken) return;
     const t = setTimeout(() => setWarmupBailedOut(true), 12000);
     return () => clearTimeout(t);
-  }, [isConnected, avatarTalkingReady]);
+  }, [isConnected, hasSpoken]);
 
-  // Keep the connecting/loading overlay up until the avatar is actually
-  // talking (or we bail) — never reveal a silent still during "listening".
   const showConnectingOverlay =
     connectionState === "connecting" ||
-    (isConnected && !avatarTalkingReady && !warmupBailedOut);
+    (isConnected && !hasSpoken && !warmupBailedOut);
 
   // Local camera / screen PIP host — we append the LiveKit-produced <video>
   // into these divs so the orchestrator retains ownership of the elements
@@ -421,8 +428,16 @@ export const ExpandedLayout: FC<Props> = ({
         )}
       </div>
 
-      {/* ── Live LiveKit video (cross-fades over background) ── */}
-      <div ref={avatarVideoContainerRef} className="ll-expanded__video" />
+      {/* ── Live LiveKit video (cross-fades over background) ──
+          Hidden (opacity 0) until the LemonSlice stream actually pushes
+          frames (agentVideoReady), so the composite poster shows through
+          during the voice-first greeting instead of a black pre-frame
+          <video>. Fades in over the still once frames arrive. */}
+      <div
+        ref={avatarVideoContainerRef}
+        className="ll-expanded__video"
+        data-ready={agentVideoReady}
+      />
 
       {/* ── Connecting overlay ─────────────────────────────────
           Stays up through the LemonSlice warmup window — see
