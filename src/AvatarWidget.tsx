@@ -1812,13 +1812,27 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   // change visually; the browser keeps the playback graph alive
   // because the element is rooted in the DOM the whole time. Same
   // pattern Twilio / Zoom / Whereby use for their hidden audio sinks.
+  // Mount + play EVERY agent audio element the session yields, and keep them
+  // all alive for the session. Voice-first boot plays the greeting on the
+  // agent's OWN audio track, while the LemonSlice avatar later publishes a
+  // SECOND audio track for its lip-synced turns. The session surfaces only the
+  // latest element via session.audioElement; the old code tore down the
+  // previous element when a new one arrived, which CUT the greeting the moment
+  // the avatar's track subscribed — i.e. exactly when its video appeared. So
+  // we accumulate: every distinct element gets its own persistent sink and
+  // keeps playing; the analyser follows the latest. The analyser only TAPS the
+  // element (useAudioLevel never routes to ctx.destination — it relies on each
+  // <audio> playing via its own output), so re-pointing the analyser does not
+  // silence a prior element still playing the greeting. The SDK removes an
+  // element on TrackUnsubscribed; we sweep any leftover sinks when the session
+  // ends (effect below). Mirrors LiveKit's RoomAudioRenderer: render all
+  // remote audio, never switch a single shared element.
+  const audioSinksRef = useRef<Map<HTMLMediaElement, HTMLDivElement>>(new Map());
   useEffect(() => {
     const el = session.audioElement;
     if (!el) return;
+    if (audioSinksRef.current.has(el)) return; // already mounted
 
-    // Persistent DOM anchor for the audio element. Created lazily per
-    // audioElement so a session restart gets a fresh sink (avoids
-    // stale-reference oddities).
     const sink = document.createElement("div");
     sink.className = "ll-audio-sink";
     sink.setAttribute("aria-hidden", "true");
@@ -1826,11 +1840,14 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
       "position:absolute;width:0;height:0;overflow:hidden;clip:rect(0 0 0 0);pointer-events:none;";
     sink.appendChild(el);
     document.body.appendChild(sink);
+    audioSinksRef.current.set(el, sink);
 
+    // Analyser follows the most-recent element (the active turn).
     audioLevel.attach(el);
 
-    // Autoplay policy: if the element can't auto-play, surface the
-    // "Tap to enable audio" overlay. The user gesture to tap re-plays.
+    // Autoplay policy: if playback is still locked (mobile, before unlock) the
+    // "Tap to enable audio" fallback shows. The connect tap normally unlocks
+    // playback (see onConnect → room.startAudio), so this rarely fires now.
     const promise = el.play();
     if (promise && typeof promise.catch === "function") {
       promise.catch((err) => {
@@ -1839,23 +1856,24 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
         }
       });
     }
-
-    return () => {
-      audioLevel.detach();
-      // Pull the audio element out before removing the sink so it
-      // could be re-attached by a future effect if React re-runs
-      // (strict mode double-effect). Then remove the sink itself.
-      if (el.parentNode === sink) {
-        sink.removeChild(el);
-      }
-      if (sink.parentNode === document.body) {
-        document.body.removeChild(sink);
-      }
-    };
-    // audioLevel is a stable object across renders — attach/detach are
-    // memoized inside the hook. Safe to omit from deps.
+    // No teardown on element change — keep prior elements playing through the
+    // avatar audio handoff. Sweep happens on disconnect (effect below).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.audioElement]);
+
+  // Sweep all audio sinks when the session ends, so the next session starts
+  // clean and we don't leak hidden <audio> sinks across reconnects.
+  useEffect(() => {
+    const cs = session.connectionState;
+    if (cs !== "disconnected" && cs !== "idle" && cs !== "error") return;
+    audioLevel.detach();
+    for (const [el, sink] of audioSinksRef.current) {
+      if (el.parentNode === sink) sink.removeChild(el);
+      if (sink.parentNode === document.body) document.body.removeChild(sink);
+    }
+    audioSinksRef.current.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session.connectionState]);
 
   // ── Mic state ────────────────────────────────────────────────
   // 0.20.0: opt-in boot-up gate. The hook mutes the freshly-published
@@ -2242,7 +2260,22 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           error={session.error}
           avatarVideoContainerRef={avatarVideoContainerRef}
           agentVideoEl={session.videoElement}
-          onConnect={() => void session.connect()}
+          onConnect={() => {
+            // Mobile autoplay: one tap should both connect AND unlock audio.
+            // connect() is async (the Room is created only after the token
+            // fetch), so we flip LiveKit's audio playback on as soon as the
+            // Room exists — still inside this tap's transient user-activation
+            // window — so the agent's audio track (subscribed a few seconds
+            // later) auto-plays without a second "Tap to enable audio" tap.
+            void Promise.resolve(session.connect()).then(() => {
+              const room = session.getRoom?.() as
+                | { startAudio?: () => Promise<void>; canPlaybackAudio?: boolean }
+                | null;
+              if (room?.startAudio && room.canPlaybackAudio === false) {
+                room.startAudio().catch(() => {});
+              }
+            });
+          }}
           onDisconnect={() => session.disconnect()}
           onRetry={handleRetry}
           onResumeAudio={handleResumeAudio}
