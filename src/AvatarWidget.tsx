@@ -1380,23 +1380,91 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           return;
         }
         // The submit event firing is NOT proof the form was actually sent.
-        // React / SPA handlers call e.preventDefault() AFTER the native
-        // submit event has already reached this (form-target) listener —
-        // React delegates submit to the root container, whose listener runs
-        // after ours. So read e.defaultPrevented on a microtask: if the SPA
-        // cancelled the native submit, the page handled it client-side and
-        // we CANNOT confirm success (its own JS validation may have rejected
-        // it — e.g. a required dropdown left unset). Report uncertain in that
-        // case; only a genuine un-prevented native submit (real POST /
-        // navigation) counts as confirmed success.
+        // React / SPA handlers call e.preventDefault() AFTER the native submit
+        // reaches this listener and handle the submit client-side (fetch). So
+        // a SPA-prevented submit alone tells us nothing — instead we OBSERVE
+        // the form for a definitive outcome rather than guessing "uncertain":
+        //   • validation errors appear       → blocked (real failure)
+        //   • the form's filled fields clear → submitted (SPA reset on success)
+        //   • the form is removed/replaced   → submitted
+        //   • a success message appears      → submitted
+        //   • nothing conclusive within ~2s  → uncertain
+        // KEY: a rejected form KEEPS its values and shows errors; only a
+        // SUCCESSFUL submit clears the fields. So a cleared form is a reliable
+        // success signal — this is what fixes the false "it didn't go through"
+        // on forms (like fssn's contact form) that reset after sending.
+        const isFillable = (el: Element): boolean => {
+          const tag = el.tagName?.toLowerCase();
+          if (tag === "textarea" || tag === "select") return true;
+          if (tag === "input") {
+            const t = ((el as HTMLInputElement).type || "text").toLowerCase();
+            return !["hidden", "submit", "button", "reset", "file", "image"].includes(t);
+          }
+          return false;
+        };
+        const valueOf = (el: Element): string => {
+          const inp = el as HTMLInputElement;
+          if (el.tagName?.toLowerCase() === "input" && (inp.type === "checkbox" || inp.type === "radio")) {
+            return inp.checked ? "on" : "";
+          }
+          return (inp.value || "").trim();
+        };
+        // Snapshot which user fields had values + the surrounding text BEFORE
+        // submit, so we can detect a reset/success message afterwards.
+        const filledBefore = Array.from(form.elements as ArrayLike<Element>).filter(
+          (el) => isFillable(el) && valueOf(el).length > 0,
+        );
+        const SUCCESS_RE =
+          /(thank you|thanks|we'?ll be in touch|message sent|message has been sent|successfully|submission received|got your message|we received|talk soon|be in touch)/i;
+        const containerTextBefore = (form.parentElement?.textContent || "").toLowerCase();
+
         let fired = false;
+        let resolved = false;
+        const resolveOnce = (payload: Record<string, unknown>) => {
+          if (resolved) return;
+          resolved = true;
+          publishResp(payload);
+        };
+        // Poll the form for ~2s after an SPA-handled submit; report the first
+        // definitive signal, else fall back to uncertain.
+        const observeSpaOutcome = () => {
+          const start = Date.now();
+          const tick = () => {
+            if (resolved) return;
+            const invalid = collectInvalid();
+            if (invalid.length > 0) {
+              resolveOnce({ type: "form_submit_blocked", formId, reason: "validation", invalidFields: invalid });
+              return;
+            }
+            if (!form.isConnected) {
+              resolveOnce({ type: "form_submitted", formId, reason: "form_removed" });
+              return;
+            }
+            if (filledBefore.length > 0 && filledBefore.every((el) => valueOf(el).length === 0)) {
+              resolveOnce({ type: "form_submitted", formId, reason: "form_reset" });
+              return;
+            }
+            const after = (form.parentElement?.textContent || "").toLowerCase();
+            if (SUCCESS_RE.test(after) && !SUCCESS_RE.test(containerTextBefore)) {
+              resolveOnce({ type: "form_submitted", formId, reason: "success_text" });
+              return;
+            }
+            if (Date.now() - start < 2000) {
+              setTimeout(tick, 250);
+            } else {
+              resolveOnce({ type: "form_submit_uncertain", formId, reason: "spa_prevented" });
+            }
+          };
+          setTimeout(tick, 200); // let the SPA's async submit handler act first
+        };
         const onSubmit = (e: Event) => {
           fired = true;
           queueMicrotask(() => {
             if (e.defaultPrevented) {
-              publishResp({ type: "form_submit_uncertain", formId, reason: "spa_prevented" });
+              observeSpaOutcome();
             } else {
-              publishResp({ type: "form_submitted", formId });
+              // Genuine un-prevented native submit (real POST / navigation).
+              resolveOnce({ type: "form_submitted", formId });
             }
           });
         };
@@ -1410,19 +1478,15 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
         } catch (err) {
           console.warn("[LiveLayer] submit_form: requestSubmit threw.", err);
           form.removeEventListener("submit", onSubmit);
-          publishResp({
-            type: "form_submit_blocked",
-            formId,
-            reason: "exception",
-          });
+          resolveOnce({ type: "form_submit_blocked", formId, reason: "exception" });
           return;
         }
         // If the submit event never fires (HTML5 constraint suppressed it),
         // treat as blocked and name the invalid field(s).
         setTimeout(() => {
-          if (!fired) {
+          if (!fired && !resolved) {
             form.removeEventListener("submit", onSubmit);
-            publishResp({
+            resolveOnce({
               type: "form_submit_blocked",
               formId,
               reason: "validation",
