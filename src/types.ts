@@ -47,6 +47,12 @@ export interface BrandingConfig {
   accentColor?: string;
   backgroundColor?: string;
   textColor?: string;
+  /**
+   * Hide the "Powered by LiveLayer" badge (premium / white-label). The host may
+   * set this directly, or it's folded in from the server-derived
+   * `AgentInfo.hideBranding` (e.g. the owning org's plan) — see AvatarWidget.
+   */
+  hideBranding?: boolean;
 }
 
 // ── Route patterns (showOn / hideOn) ─────────────────────────────────────

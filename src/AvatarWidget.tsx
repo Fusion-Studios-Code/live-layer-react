@@ -2287,7 +2287,11 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           avatarImageUrl={avatarImageUrl}
           idleLoopUrl={idleLoopUrl}
           greeting={greeting}
-          branding={branding}
+          branding={{
+            ...branding,
+            hideBranding:
+              branding.hideBranding ?? prefetchedAgent.info?.hideBranding,
+          }}
           teamMembers={teamMembers}
           currentTeamMemberId={currentTeamMemberId}
           isSwitchingTeamMember={isSwitchingTeamMember}

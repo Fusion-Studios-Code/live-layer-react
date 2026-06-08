@@ -28,6 +28,13 @@ export interface AgentInfo {
    * does the work).
    */
   autoPageContext?: boolean;
+  /**
+   * When true, hide the "Powered by LiveLayer" badge for this agent — set
+   * server-side for premium / white-label customers (e.g. derived from the
+   * owning organization's plan). The widget folds this into
+   * `branding.hideBranding`.
+   */
+  hideBranding?: boolean;
 }
 
 export interface AgentInfoHandle {
