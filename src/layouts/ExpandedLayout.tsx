@@ -356,14 +356,12 @@ export const ExpandedLayout: FC<Props> = ({
   );
 
   const productName = branding.productName || "Live Layer";
-  // "Powered by LiveLayer" mark + link to livelayer.studio. ONLY shown
-  // when the host hasn't overridden `branding.productName` — the
-  // assumption is that any host that bothered to set a custom product
-  // name is white-labeling and does NOT want our brand surfacing in
-  // their UI. (If a host later wants the badge anyway, the right move
-  // is a separate `branding.showPoweredBy` opt-in flag — don't change
-  // this default behavior.)
-  const showLiveLayerMark = !branding.productName;
+  // "Powered by LiveLayer" mark + link to livelayer.studio. Hidden for premium
+  // / white-label customers via the explicit `branding.hideBranding` flag (set
+  // by the host, or folded in from the server-derived `AgentInfo.hideBranding`
+  // — e.g. the owning org's plan). Also kept hidden by the legacy heuristic
+  // that a host who set a custom `productName` is white-labeling.
+  const showLiveLayerMark = !branding.hideBranding && !branding.productName;
 
   // Two-pill captions for deaf-friendly UX. We render the latest user STT
   // and the latest agent caption as separate pills so the conversation
