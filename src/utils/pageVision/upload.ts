@@ -16,6 +16,10 @@ export async function uploadScreenshot(
   cfg: PageVisionUploadConfig,
 ): Promise<string | null> {
   try {
+    // crypto.randomUUID requires a secure context (https/localhost); if it
+    // throws, the catch below no-ops gracefully. Deliberately NO
+    // Math.random fallback — predictable keys would weaken the
+    // unguessable-URL property (spec §5) that makes a public bucket OK.
     const key = `${crypto.randomUUID()}.jpg`;
     const res = await fetch(
       `${cfg.supabaseUrl}/storage/v1/object/${cfg.bucket}/${key}`,

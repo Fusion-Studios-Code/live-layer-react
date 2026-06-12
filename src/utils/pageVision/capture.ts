@@ -56,8 +56,15 @@ export async function capturePageImage(opts: CaptureOptions): Promise<CapturedPa
       canvasWidth: Math.round(srcW * scale),
       canvasHeight: Math.round(srcH * scale),
       backgroundColor: "#ffffff",
-      // Viewport-sized capture: what the visitor currently sees, not the
-      // full scroll height — keeps tokens bounded on long pages.
+      // Fonts are skipped because the LLM doesn't need them and inlining
+      // webfonts costs latency on every capture.
+      skipFonts: true,
+      // Viewport-sized slice at the CURRENT scroll position — what the
+      // visitor actually sees (the whole point of step_change captures on
+      // long forms), not the top of the page; keeps tokens bounded too.
+      // Best-effort: fixed-position elements render at their DOM position
+      // and html-element backgrounds don't shift with the transform.
+      style: { transform: `translateY(-${window.scrollY || 0}px)` },
       height: srcH,
       width: srcW,
     });

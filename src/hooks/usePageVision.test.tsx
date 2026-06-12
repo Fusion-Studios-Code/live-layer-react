@@ -50,10 +50,16 @@ const flush = () =>
   });
 
 beforeEach(() => {
-  // The hook waits two rAFs ("after next paint") before capturing; make
-  // them immediate so the trigger chain starts inside the rerender act().
+  // The hook waits one rAF (paint) + one idle slot before capturing; make
+  // both immediate so the trigger chain starts inside the rerender act().
+  // (The setTimeout fallback path for Safari also works under these stubs,
+  // but stubbing requestIdleCallback keeps everything synchronous.)
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback): number => {
     cb(0);
+    return 0;
+  });
+  vi.stubGlobal("requestIdleCallback", (cb: IdleRequestCallback): number => {
+    cb({ didTimeout: false, timeRemaining: () => 50 } as IdleDeadline);
     return 0;
   });
 });
@@ -62,19 +68,25 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function renderPageVision() {
+interface HookProps {
+  connected: boolean;
+  agentReady: boolean;
+  config: PageVisionClientConfig | null;
+}
+
+function renderPageVision(initial: Partial<HookProps> = {}) {
   const publish = vi.fn();
   const { rerender } = renderHook(
-    (props: { connected: boolean; agentReady: boolean }) =>
+    (props: HookProps) =>
       usePageVision({
-        config,
+        config: props.config,
         connected: props.connected,
         pathname: "/",
         currentStep: undefined,
         publishData: publish,
         agentReady: props.agentReady,
       }),
-    { initialProps: { connected: false, agentReady: false } },
+    { initialProps: { connected: false, agentReady: false, config, ...initial } },
   );
   return { publish, rerender };
 }
@@ -83,12 +95,12 @@ describe("usePageVision agentReady republish latch", () => {
   it("republishes the flow_start envelope when the agent first becomes ready", async () => {
     const { publish, rerender } = renderPageVision();
 
-    rerender({ connected: true, agentReady: false });
+    rerender({ connected: true, agentReady: false, config });
     await waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
     const envelope = publish.mock.calls[0][0];
     expect(envelope).toMatchObject({ type: "page_screenshot", reason: "flow_start" });
 
-    rerender({ connected: true, agentReady: true });
+    rerender({ connected: true, agentReady: true, config });
     expect(publish).toHaveBeenCalledTimes(2);
     expect(publish.mock.calls[1][0]).toBe(envelope); // same envelope, no re-capture
   });
@@ -96,14 +108,14 @@ describe("usePageVision agentReady republish latch", () => {
   it("does not refire when agentReady toggles within a single connect", async () => {
     const { publish, rerender } = renderPageVision();
 
-    rerender({ connected: true, agentReady: false });
+    rerender({ connected: true, agentReady: false, config });
     await waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
-    rerender({ connected: true, agentReady: true });
+    rerender({ connected: true, agentReady: true, config });
     expect(publish).toHaveBeenCalledTimes(2);
 
     // agentReady flaps while connected stays true → latch must hold.
-    rerender({ connected: true, agentReady: false });
-    rerender({ connected: true, agentReady: true });
+    rerender({ connected: true, agentReady: false, config });
+    rerender({ connected: true, agentReady: true, config });
     expect(publish).toHaveBeenCalledTimes(2);
   });
 
@@ -111,24 +123,42 @@ describe("usePageVision agentReady republish latch", () => {
     const { publish, rerender } = renderPageVision();
 
     // First session: flow_start capture + republish on agent-ready.
-    rerender({ connected: true, agentReady: false });
+    rerender({ connected: true, agentReady: false, config });
     await waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
     const envelope = publish.mock.calls[0][0];
-    rerender({ connected: true, agentReady: true });
+    rerender({ connected: true, agentReady: true, config });
     expect(publish).toHaveBeenCalledTimes(2);
 
     // Disconnect (widget stays mounted), then reconnect. The second
     // flow_start capture is MAE-deduped (identical thumb) → no publish,
     // exactly as in production when the page hasn't changed.
-    rerender({ connected: false, agentReady: false });
-    rerender({ connected: true, agentReady: false });
+    rerender({ connected: false, agentReady: false, config });
+    rerender({ connected: true, agentReady: false, config });
     await flush();
     expect(publish).toHaveBeenCalledTimes(2); // deduped — nothing sent yet
 
     // The new session's agentReady must republish despite the old latch,
     // otherwise the new worker session never receives ANY envelope.
-    rerender({ connected: true, agentReady: true });
+    rerender({ connected: true, agentReady: true, config });
     expect(publish).toHaveBeenCalledTimes(3);
     expect(publish.mock.calls[2][0]).toBe(envelope);
+  });
+});
+
+describe("usePageVision flow_start/config race", () => {
+  it("fires flow_start when config arrives after connected (autoConnect race)", async () => {
+    // Under autoConnect the room can connect before the agent-info HTTP
+    // fetch resolves: connected=true while config is still null.
+    const { publish, rerender } = renderPageVision({ connected: true, config: null });
+    await flush();
+    expect(publish).not.toHaveBeenCalled(); // no controller yet — latch must not burn
+
+    // Config lands late → controller is built and flow_start still fires.
+    rerender({ connected: true, agentReady: false, config });
+    await waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
+    expect(publish.mock.calls[0][0]).toMatchObject({
+      type: "page_screenshot",
+      reason: "flow_start",
+    });
   });
 });

@@ -8,6 +8,12 @@ import {
 import { uploadScreenshot } from "../utils/pageVision/upload";
 
 export interface UsePageVisionArgs {
+  /**
+   * Page-vision config from agent info (null/undefined until fetched).
+   * Must be referentially stable across renders — an inline literal
+   * rebuilds the controller every render and silently kills dedup and
+   * republishLast.
+   */
   config: PageVisionClientConfig | null | undefined;
   connected: boolean;
   pathname: string;
@@ -26,8 +32,9 @@ export interface UsePageVisionArgs {
 
 /**
  * Fires page captures on session connect (flow_start), route change, and
- * flow step change. Captures wait two animation frames so the new view
- * has painted. All real logic lives in PageVisionController (tested).
+ * flow step change. Captures wait one animation frame (so the new view
+ * has painted) plus an idle slot (so the html-to-image clone pass doesn't
+ * jank the transition). All real logic lives in PageVisionController.
  */
 export function usePageVision(args: UsePageVisionArgs): void {
   const { config, connected, pathname, currentStep, publishData, agentReady } = args;
@@ -55,22 +62,37 @@ export function usePageVision(args: UsePageVisionArgs): void {
     (reason: CaptureReason) => {
       const controller = controllerRef.current;
       if (!controller) return;
-      // Two rAFs ≈ "after next paint" — the route/step change has rendered.
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() => {
-          void controller.trigger(reason, pathRef.current);
-        }),
-      );
+      // One rAF ≈ "after next paint", then an idle slot so the
+      // html-to-image clone pass doesn't jank the route/step transition.
+      requestAnimationFrame(() => {
+        const idle: (cb: () => void) => void =
+          typeof window.requestIdleCallback === "function"
+            ? (cb) => window.requestIdleCallback(cb, { timeout: 1500 })
+            : (cb) => { setTimeout(cb, 200); }; // Safari has no requestIdleCallback
+        idle(() => { void controller.trigger(reason, pathRef.current); });
+      });
     },
     [],
   );
 
-  // Session connect → flow_start
-  const prevConnected = useRef(false);
+  // Session connect → flow_start. Coincide-latch, NOT connect-edge
+  // detection: under autoConnect, `connected` can go true while config
+  // (from the agent-info fetch) is still null — an edge-triggered fire
+  // would land on a null controller and the flow_start would be lost
+  // forever. With `config` in the deps, a late-arriving config re-runs
+  // this effect (the controller effect above has already rebuilt the ref)
+  // and the latch ensures exactly one flow_start per connect cycle.
+  const flowStartFiredRef = useRef(false);
   useEffect(() => {
-    if (connected && !prevConnected.current) fire("flow_start");
-    prevConnected.current = connected;
-  }, [connected, fire]);
+    if (!connected) {
+      flowStartFiredRef.current = false;
+      return;
+    }
+    if (controllerRef.current && !flowStartFiredRef.current) {
+      flowStartFiredRef.current = true;
+      fire("flow_start");
+    }
+  }, [connected, config, fire]);
 
   // Route change (skip the initial value)
   const prevPath = useRef(pathname);

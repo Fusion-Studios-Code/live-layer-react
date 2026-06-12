@@ -53,11 +53,29 @@ describe("PageVisionController", () => {
     await c.trigger("flow_start", "/a");
     await c.trigger("route_change", "/b"); // identical thumb(100) → deduped
     expect(published).toHaveLength(1);
+    expect(deps.upload).toHaveBeenCalledTimes(1); // dedup happens BEFORE upload
     (deps.capture as ReturnType<typeof vi.fn>).mockResolvedValue({
       blob: new Blob(), thumb: thumb(200), width: 10, height: 10,
     });
     await c.trigger("route_change", "/c");
     expect(published).toHaveLength(2);
+    expect(deps.upload).toHaveBeenCalledTimes(2); // changed thumb → uploaded again
+  });
+
+  it("does nothing when config.enabled is false", async () => {
+    const { c, deps, published } = makeController({
+      config: {
+        enabled: false,
+        captureOn: ["flow_start", "route_change", "step_change"],
+        maxWidth: 1024,
+        jpegQuality: 0.7,
+        upload: { supabaseUrl: "https://s", anonKey: "k", bucket: "page-vision" },
+      },
+    });
+    await c.trigger("flow_start", "/home");
+    expect(deps.capture).not.toHaveBeenCalled();
+    expect(deps.upload).not.toHaveBeenCalled();
+    expect(published).toHaveLength(0);
   });
 
   it("does not remember a thumb when upload fails (retries next trigger)", async () => {
@@ -144,5 +162,55 @@ describe("PageVisionController", () => {
     await c.trigger("flow_start", "/home");
     expect(deps.capture).not.toHaveBeenCalled();
     expect(published).toHaveLength(0);
+  });
+
+  it("warns exactly once when the upload config is incomplete", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { c } = makeController({
+        config: {
+          enabled: true,
+          captureOn: ["flow_start", "route_change", "step_change"],
+          maxWidth: 1024,
+          jpegQuality: 0.7,
+          upload: { supabaseUrl: "", anonKey: "k", bucket: "page-vision" },
+        },
+      });
+      await c.trigger("flow_start", "/a");
+      await c.trigger("route_change", "/b");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain("upload config incomplete");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // ── Publish resilience ────────────────────────────────────────────────
+  it("keeps lastEnvelope when publish throws so republishLast can recover", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const delivered: Array<Record<string, unknown>> = [];
+      let failNext = true;
+      const { c } = makeController({
+        publish: (p: Record<string, unknown>) => {
+          if (failNext) {
+            failNext = false;
+            throw new Error("data channel not open");
+          }
+          delivered.push(p);
+        },
+      });
+      // Initial publish throws — trigger must not reject…
+      await expect(c.trigger("flow_start", "/home")).resolves.toBeUndefined();
+      expect(delivered).toHaveLength(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+      // …and the envelope was saved BEFORE the publish attempt, so
+      // republishLast (agent-ready) recovers it.
+      c.republishLast();
+      expect(delivered).toHaveLength(1);
+      expect(delivered[0]).toMatchObject({ type: "page_screenshot", reason: "flow_start" });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

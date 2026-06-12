@@ -12,11 +12,25 @@ export interface PageVisionClientConfig {
   upload: PageVisionUploadConfig;
 }
 
+/**
+ * Data-channel envelope for one published screenshot. A `type` alias (not
+ * an interface) so it stays assignable to Record<string, unknown> at the
+ * widget's publishData boundary.
+ */
+export type PageScreenshotEnvelope = {
+  type: "page_screenshot";
+  url: string;
+  route: string;
+  reason: CaptureReason;
+  hash: string;
+  capturedAt: number;
+};
+
 export interface PageVisionControllerDeps {
   config: PageVisionClientConfig;
   capture: (opts: CaptureOptions) => Promise<CapturedPage | null>;
   upload: (blob: Blob, cfg: PageVisionUploadConfig) => Promise<string | null>;
-  publish: (payload: Record<string, unknown>) => void;
+  publish: (payload: PageScreenshotEnvelope) => void;
 }
 
 /**
@@ -28,12 +42,14 @@ export interface PageVisionControllerDeps {
  * registered after the flow_start was sent.
  *
  * Carry-forward 2: guards against empty upload config strings that a
- * misconfigured server endpoint may return even when enabled is true.
+ * misconfigured server endpoint may return even when enabled is true
+ * (warns once so the integrator hears about the misconfiguration).
  */
 export class PageVisionController {
   private lastThumb: Uint8Array | null = null;
   private inFlight = false;
-  private lastEnvelope: Record<string, unknown> | null = null;
+  private lastEnvelope: PageScreenshotEnvelope | null = null;
+  private warnedIncompleteConfig = false;
 
   constructor(private deps: PageVisionControllerDeps) {}
 
@@ -47,7 +63,15 @@ export class PageVisionController {
       !config.upload.supabaseUrl ||
       !config.upload.anonKey ||
       !config.upload.bucket
-    ) return;
+    ) {
+      if (!this.warnedIncompleteConfig) {
+        this.warnedIncompleteConfig = true;
+        console.warn(
+          "[LiveLayer] page-vision enabled but upload config incomplete — skipping captures",
+        );
+      }
+      return;
+    }
 
     this.inFlight = true;
     try {
@@ -56,22 +80,27 @@ export class PageVisionController {
         jpegQuality: config.jpegQuality,
       });
       if (!cap) return;
+      // Stamp at capture time — upload latency shouldn't skew the
+      // timestamp the worker uses to judge freshness.
+      const capturedAt = Date.now();
       if (this.lastThumb && meanAbsoluteError(this.lastThumb, cap.thumb) < DEDUP_MAE_THRESHOLD) {
         return; // visually unchanged — skip upload entirely
       }
       const url = await this.deps.upload(cap.blob, config.upload);
       if (!url) return; // upload failed — keep lastThumb unset so we retry
       this.lastThumb = cap.thumb;
-      const envelope: Record<string, unknown> = {
+      const envelope: PageScreenshotEnvelope = {
         type: "page_screenshot",
         url,
         route,
         reason,
         hash: thumbHashHex(cap.thumb),
-        capturedAt: Date.now(),
+        capturedAt,
       };
+      // Save BEFORE publishing: if the data channel throws (e.g. not open
+      // yet), republishLast() on agent-ready can still deliver this envelope.
       this.lastEnvelope = envelope;
-      this.deps.publish(envelope);
+      this.safePublish(envelope);
     } finally {
       this.inFlight = false;
     }
@@ -84,8 +113,15 @@ export class PageVisionController {
    * registered after the original flow_start was sent.
    */
   republishLast(): void {
-    if (this.lastEnvelope) {
-      this.deps.publish(this.lastEnvelope);
+    if (this.lastEnvelope) this.safePublish(this.lastEnvelope);
+  }
+
+  /** Publish must never break a trigger — a throwing data channel is logged, not fatal. */
+  private safePublish(envelope: PageScreenshotEnvelope): void {
+    try {
+      this.deps.publish(envelope);
+    } catch (err) {
+      console.warn("[LiveLayer] page-vision publish failed:", err);
     }
   }
 }
