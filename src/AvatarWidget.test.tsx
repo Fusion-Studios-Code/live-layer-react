@@ -8,6 +8,7 @@ import {
 } from "./AvatarWidget";
 import type { AgentCommand, AgentEventDetail } from "./types";
 import type { PageVisionClientConfig } from "./utils/pageVision/controller";
+import { uploadScreenshot } from "./utils/pageVision/upload";
 
 // Page-vision capture + upload are mocked so jsdom never touches canvas or
 // the network. The widget wires usePageVision → PageVisionController →
@@ -945,5 +946,10 @@ describe("AvatarWidget page-vision integration", () => {
         ),
       ).toBe(true),
     );
+
+    // Prove the real capture→upload path executed (not a republish/dedup
+    // bypass that happened to publish a stale envelope): the published URL
+    // is the upload mock's return value, so upload must have run exactly once.
+    expect(vi.mocked(uploadScreenshot)).toHaveBeenCalledTimes(1);
   });
 });

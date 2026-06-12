@@ -1011,10 +1011,10 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           // its fallback, and the default walker) routes through here, so
           // this single read covers all the fresh-context sites.
           if (payload.type === "page_context") {
-            const __step = (
+            const step = (
               payload.context as { flow?: { currentStep?: number } } | undefined
             )?.flow?.currentStep;
-            setFlowStep(typeof __step === "number" ? __step : undefined);
+            setFlowStep(typeof step === "number" ? step : undefined);
           }
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const room = sender as any;
