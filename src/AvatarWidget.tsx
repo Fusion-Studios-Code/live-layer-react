@@ -138,6 +138,8 @@ import { useCameraState } from "./hooks/useCameraState";
 import { useScreenShareState } from "./hooks/useScreenShareState";
 import { useMediaDevices } from "./hooks/useMediaDevices";
 import { useAgentInfo } from "./hooks/useAgentInfo";
+import { usePageVision } from "./hooks/usePageVision";
+import type { PageVisionClientConfig } from "./utils/pageVision/controller";
 import { useDisplayModePersistence } from "./hooks/useDisplayModePersistence";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { useDragAndResize } from "./hooks/useDragAndResize";
@@ -514,6 +516,17 @@ export interface AvatarWidgetProps {
    */
   capabilities?: import("./types").AgentCapability[];
 
+  // ── Page vision (0.25.0) ─────────────────────────────────────
+  /**
+   * Page vision: capture page screenshots for the agent at flow start /
+   * route change / step change. Defaults to the server-side config from
+   * the agent-info endpoint; pass null to force-disable on this host.
+   * NOTE: must be referentially stable across renders — an inline object
+   * literal rebuilds the capture controller every render and silently
+   * disables dedup/republish. Prefer the server config or a useMemo/const.
+   */
+  pageVision?: PageVisionClientConfig | null;
+
   // ── Lifecycle callbacks ──────────────────────────────────────
   onConnect?: () => void;
   onDisconnect?: () => void;
@@ -637,6 +650,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     onScrollPage,
     onClick: onClickProp,
     capabilities,
+    pageVision,
     onConnect,
     onDisconnect,
     onTranscript,
@@ -808,6 +822,10 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   const [teamSwitcherOpen, setTeamSwitcherOpen] = useState(false);
   const [languageMenuOpen, setLanguageMenuOpen] = useState(false);
   const [speakerMuted, setSpeakerMuted] = useState(false);
+  // Latest flow.currentStep the widget observed (multi-step forms). Fed to
+  // usePageVision so a step change triggers a fresh page-vision capture.
+  // Updated wherever a PageContext is produced (request_page_context).
+  const [flowStep, setFlowStep] = useState<number | undefined>(undefined);
 
   // ── UI sound effects (chime / confirmation / thinking loop) ──
   // Mirrors lib/audio/play-sound.ts in the dashboard. Reads MP3s from
@@ -988,6 +1006,16 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           typeof cmd.requestId === "string" ? cmd.requestId : undefined;
         const sender = roomGetterRef.current?.();
         const publish = (payload: Record<string, unknown>) => {
+          // Track the latest observed flow step for page-vision step-change
+          // captures. Every page_context payload (custom getter sync/async,
+          // its fallback, and the default walker) routes through here, so
+          // this single read covers all the fresh-context sites.
+          if (payload.type === "page_context") {
+            const __step = (
+              payload.context as { flow?: { currentStep?: number } } | undefined
+            )?.flow?.currentStep;
+            setFlowStep(typeof __step === "number" ? __step : undefined);
+          }
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const room = sender as any;
           const localParticipant = room?.localParticipant;
@@ -1769,33 +1797,41 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   // Mirror sessionRef for the controlled-publish path.
   const controlledSessionRef = useRef(controlledSession);
   controlledSessionRef.current = controlledSession;
+  // Stable publish helper shared by the imperative `sendData` handle and
+  // the page-vision hook. Body is the exact controlledSession-aware
+  // publish path; both consumers route through the same logic. Deps are
+  // empty because it only reads refs (controlledSessionRef / sessionRef).
+  const publishDataMessage = useCallback(
+    async (data: Record<string, unknown>) => {
+      // Controlled mode: host owns the Room, route through their hook.
+      const ctrl = controlledSessionRef.current;
+      if (ctrl?.publishData) {
+        try {
+          await ctrl.publishData(data);
+        } catch (err) {
+          console.warn("[AvatarWidget] sendData (controlled) failed:", err);
+        }
+        return;
+      }
+      const room = sessionRef.current?.getRoom?.();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const lp = (room as any)?.localParticipant;
+      if (!lp?.publishData) return;
+      try {
+        const payload = new TextEncoder().encode(JSON.stringify(data));
+        await lp.publishData(payload, { reliable: true });
+      } catch (err) {
+        console.warn("[AvatarWidget] sendData failed:", err);
+      }
+    },
+    [],
+  );
   useImperativeHandle(
     ref,
     () => ({
-      sendData: async (data: Record<string, unknown>) => {
-        // Controlled mode: host owns the Room, route through their hook.
-        const ctrl = controlledSessionRef.current;
-        if (ctrl?.publishData) {
-          try {
-            await ctrl.publishData(data);
-          } catch (err) {
-            console.warn("[AvatarWidget] sendData (controlled) failed:", err);
-          }
-          return;
-        }
-        const room = sessionRef.current?.getRoom?.();
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const lp = (room as any)?.localParticipant;
-        if (!lp?.publishData) return;
-        try {
-          const payload = new TextEncoder().encode(JSON.stringify(data));
-          await lp.publishData(payload, { reliable: true });
-        } catch (err) {
-          console.warn("[AvatarWidget] sendData failed:", err);
-        }
-      },
+      sendData: async (data: Record<string, unknown>) => publishDataMessage(data),
     }),
-    [],
+    [publishDataMessage],
   );
 
   // ── Video element attachment ─────────────────────────────────
@@ -2156,6 +2192,27 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     capabilitiesRef.current = prefetchedAgent.info.capabilities as
       | import("./types").AgentCapability[];
   }
+
+  // ── Page vision (0.25.0) ─────────────────────────────────────
+  // Capture page screenshots for the agent at flow start / route change /
+  // step change. Config precedence: explicit `pageVision` prop (including
+  // `null` to force-disable) > server-side config from the agent-info
+  // endpoint > null. All capture/dedup/upload/publish logic lives in the
+  // hook + PageVisionController; we only feed it the widget's signals.
+  // `agentReady` flips true once the agent is live (listening/speaking) so
+  // the hook can republish the flow_start envelope to a late-registered
+  // worker listener; the hook's internal latch handles once-per-connect.
+  const agentReady =
+    session.agentState === "listening" || session.agentState === "speaking";
+  usePageVision({
+    config:
+      pageVision !== undefined ? pageVision : prefetchedAgent.info?.pageVision ?? null,
+    connected: session.connectionState === "connected",
+    pathname,
+    currentStep: flowStep,
+    agentReady,
+    publishData: publishDataMessage,
+  });
 
   // ── Derived render values ────────────────────────────────────
   const agentName =

@@ -156,6 +156,16 @@ export { useMediaDevices } from "./hooks/useMediaDevices";
 export type { MediaDevicesHandle } from "./hooks/useMediaDevices";
 export { useAgentInfo } from "./hooks/useAgentInfo";
 export type { AgentInfo, AgentInfoHandle } from "./hooks/useAgentInfo";
+
+// Page vision (0.25.0) — opt-in page-screenshot capture for the agent at
+// flow start / route change / step change. The widget wires this from the
+// server-side agent-info config automatically; `usePageVision` is exposed
+// for power users driving captures around a custom session.
+export { usePageVision } from "./hooks/usePageVision";
+export type {
+  PageVisionClientConfig,
+  CaptureReason,
+} from "./utils/pageVision/controller";
 export { useTranscript } from "./hooks/useTranscript";
 export type { TranscriptHandle } from "./hooks/useTranscript";
 export { useDisplayMode } from "./hooks/useDisplayMode";
