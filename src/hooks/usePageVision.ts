@@ -17,9 +17,9 @@ export interface UsePageVisionArgs {
   /**
    * Carry-forward 1: becomes true once the agent is ready to receive
    * messages (first listening/speaking state). On the first false→true
-   * transition while connected, republishLast() is called so the worker
-   * receives the flow_start envelope even if its listener registered after
-   * the original publish.
+   * transition of each connect cycle, republishLast() is called so the
+   * worker receives the flow_start envelope even if its listener
+   * registered after the original publish.
    */
   agentReady: boolean;
 }
@@ -96,10 +96,17 @@ export function usePageVision(args: UsePageVisionArgs): void {
   }, [currentStep, connected, fire]);
 
   // Carry-forward 1: agent first becomes ready → republish last envelope
-  // so the worker's listener catches the flow_start even if it registered late.
+  // so the worker's listener catches the flow_start even if it registered
+  // late. The latch is per-CONNECT, not per-mount: it resets when the
+  // connection drops so a reconnected session (whose flow_start capture may
+  // be MAE-deduped away) still receives the envelope on its agent-ready.
   const agentReadyFiredRef = useRef(false);
   useEffect(() => {
-    if (agentReady && connected && !agentReadyFiredRef.current) {
+    if (!connected) {
+      agentReadyFiredRef.current = false;
+      return;
+    }
+    if (agentReady && !agentReadyFiredRef.current) {
       agentReadyFiredRef.current = true;
       controllerRef.current?.republishLast();
     }
