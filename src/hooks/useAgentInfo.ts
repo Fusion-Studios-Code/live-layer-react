@@ -35,6 +35,8 @@ export interface AgentInfo {
    * `branding.hideBranding`.
    */
   hideBranding?: boolean;
+  /** Page-vision capture config served by the agent-info endpoint (0.25.0+). */
+  pageVision?: import("../utils/pageVision/controller").PageVisionClientConfig | null;
 }
 
 export interface AgentInfoHandle {

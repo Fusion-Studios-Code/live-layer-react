@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, act, waitFor } from "@testing-library/react";
 import { createRef, useState } from "react";
 import {
   AvatarWidget,
@@ -7,6 +7,33 @@ import {
   type ControlledSession,
 } from "./AvatarWidget";
 import type { AgentCommand, AgentEventDetail } from "./types";
+import type { PageVisionClientConfig } from "./utils/pageVision/controller";
+import { uploadScreenshot } from "./utils/pageVision/upload";
+
+// Page-vision capture + upload are mocked so jsdom never touches canvas or
+// the network. The widget wires usePageVision → PageVisionController →
+// these two modules; with them stubbed the whole capture chain runs
+// synchronously under the rAF/idle stubs below.
+vi.mock("./utils/pageVision/capture", async (importOriginal) => {
+  const real =
+    await importOriginal<typeof import("./utils/pageVision/capture")>();
+  return {
+    ...real,
+    capturePageImage: vi.fn().mockResolvedValue({
+      blob: new Blob([new Uint8Array([1])], { type: "image/jpeg" }),
+      thumb: new Uint8Array(32 * 32).fill(7),
+      width: 10,
+      height: 10,
+    }),
+  };
+});
+vi.mock("./utils/pageVision/upload", () => ({
+  uploadScreenshot: vi
+    .fn()
+    .mockResolvedValue(
+      "https://s/storage/v1/object/public/page-vision/t.jpg",
+    ),
+}));
 
 // Minimal ControlledSession factory. Tests override the fields they care
 // about. Defaults produce a disconnected, no-op session.
@@ -827,4 +854,102 @@ describe("AvatarWidget (controlledSession API)", () => {
     });
   });
 
+});
+
+describe("AvatarWidget page-vision integration", () => {
+  const pageVisionConfig: PageVisionClientConfig = {
+    enabled: true,
+    captureOn: ["flow_start", "route_change", "step_change"],
+    maxWidth: 1024,
+    jpegQuality: 0.7,
+    upload: {
+      supabaseUrl: "https://x.supabase.co",
+      anonKey: "anon",
+      bucket: "page-vision",
+    },
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    // The capture waits one rAF (paint) + one idle slot before firing;
+    // make both immediate so the trigger chain runs inside the act() that
+    // flips the connection state.
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      (cb: FrameRequestCallback): number => {
+        cb(0);
+        return 0;
+      },
+    );
+    vi.stubGlobal(
+      "requestIdleCallback",
+      (cb: IdleRequestCallback): number => {
+        cb({ didTimeout: false, timeRemaining: () => 50 } as IdleDeadline);
+        return 0;
+      },
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("publishes a flow_start page_screenshot after the session connects", async () => {
+    // Records every payload the widget publishes over the (controlled)
+    // data channel — publishDataMessage routes through this in controlled
+    // mode, and the page-vision hook publishes through publishDataMessage.
+    const published: Record<string, unknown>[] = [];
+    const publishData = vi.fn((p: Record<string, unknown>) => {
+      published.push(p);
+    });
+
+    function Harness() {
+      const [state, setState] = useState<"idle" | "connected">("idle");
+      return (
+        <>
+          <button onClick={() => setState("connected")}>connect</button>
+          <AvatarWidget
+            agentId="test-agent"
+            pageVision={pageVisionConfig}
+            controlledSession={makeControlledSession({
+              connectionState: state,
+              // Agent goes live so the hook's agentReady republish path is
+              // also exercised; the flow_start capture itself fires off the
+              // connect transition regardless.
+              agentState: state === "connected" ? "listening" : "idle",
+              publishData,
+            })}
+          />
+        </>
+      );
+    }
+
+    render(<Harness />);
+    // Nothing published before connect.
+    expect(
+      published.some((p) => p.type === "page_screenshot"),
+    ).toBe(false);
+
+    // Drive to connected — fires the flow_start capture chain.
+    await act(async () => {
+      screen.getByText("connect").click();
+      // Let the mocked capture→upload→publish microtasks settle.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() =>
+      expect(
+        published.some(
+          (p) =>
+            p.type === "page_screenshot" && p.reason === "flow_start",
+        ),
+      ).toBe(true),
+    );
+
+    // Prove the real capture→upload path executed (not a republish/dedup
+    // bypass that happened to publish a stale envelope): the published URL
+    // is the upload mock's return value, so upload must have run exactly once.
+    expect(vi.mocked(uploadScreenshot)).toHaveBeenCalledTimes(1);
+  });
 });
