@@ -171,3 +171,25 @@ export type { TranscriptHandle } from "./hooks/useTranscript";
 export { useDisplayMode } from "./hooks/useDisplayMode";
 export { useDisplayModePersistence } from "./hooks/useDisplayModePersistence";
 export { useIsMobile } from "./hooks/useIsMobile";
+
+// App signals — host→agent page/step + app events. A declarative way for the
+// host app to tell the agent "the user moved to page X; these required fields
+// are still empty" and to emit arbitrary app events. The agent worker folds
+// these into its LLM context so it reacts (asks for the next missing required
+// field, acknowledges page changes). Pairs with the agent-side handler.
+//
+//   useLiveLayerPage(ref, { page, fields })  — declarative; emits on page change
+//   publishPageChanged(ref.current, …)       — imperative equivalent
+//   publishAppEvent(ref.current, name, data) — arbitrary app event
+export { useLiveLayerPage } from "./hooks/useLiveLayerPage";
+export type { UseLiveLayerPageInput } from "./hooks/useLiveLayerPage";
+export { publishPageChanged, publishAppEvent } from "./utils/appSignals";
+export type {
+  LLAppSignal,
+  LLPageChangedMessage,
+  LLAppEventMessage,
+  LLPageDescriptor,
+  LLPageField,
+  PageChangedInput,
+  AppSignalSink,
+} from "./utils/appSignals";
