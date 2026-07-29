@@ -19,6 +19,14 @@ vi.mock("livekit-client", () => {
   };
   return {
     createLocalAudioTrack: vi.fn(async () => mockTrack),
+    // String values mirror livekit-client's RoomEvent enum — the hook
+    // subscribes with these for the controlled-mode room-state sync.
+    RoomEvent: {
+      LocalTrackPublished: "localTrackPublished",
+      LocalTrackUnpublished: "localTrackUnpublished",
+      TrackMuted: "trackMuted",
+      TrackUnmuted: "trackUnmuted",
+    },
     __mockTrack: mockTrack,
   };
 });
@@ -31,6 +39,7 @@ import { useMicrophoneState } from "./useMicrophoneState";
 // detection at agent-ready time.
 function makeRoom() {
   const state = { isMicrophoneEnabled: true };
+  const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
   const setMicrophoneEnabled = vi.fn(async (enabled: boolean) => {
     state.isMicrophoneEnabled = enabled;
   });
@@ -44,6 +53,18 @@ function makeRoom() {
       },
     },
     switchActiveDevice: vi.fn(async () => undefined),
+    on(event: string, cb: (...args: unknown[]) => void) {
+      if (!listeners.has(event)) listeners.set(event, new Set());
+      listeners.get(event)!.add(cb);
+      return this;
+    },
+    off(event: string, cb: (...args: unknown[]) => void) {
+      listeners.get(event)?.delete(cb);
+      return this;
+    },
+    __emit(event: string) {
+      listeners.get(event)?.forEach((cb) => cb());
+    },
     __state: state,
   };
 }
@@ -155,6 +176,70 @@ describe("useMicrophoneState boot-up gate", () => {
     rerender();
     await new Promise((r) => setTimeout(r, 0));
     expect(room.localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
+  });
+
+  it("attachRoom (controlled mode) syncs isMuted to the host's live mic — stuck-red regression", async () => {
+    // livelayer.studio bug: V2 owns the Room and publishes a hot mic;
+    // the hook's gate init'd isMuted=true and nothing ever cleared it,
+    // so the icon showed muted-red while the agent could hear the user.
+    const room = makeRoom(); // host mic enabled (default)
+    const { result } = renderHook(() =>
+      useMicrophoneState({ gateUntilAgentReady: true, agentState: "idle" }),
+    );
+    expect(result.current.isMuted).toBe(true); // gate init
+    act(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      result.current.attachRoom(room as any);
+    });
+    expect(result.current.isMuted).toBe(false); // mirrors hot host mic
+  });
+
+  it("attachRoom keeps mirroring host mic changes via room events", async () => {
+    const room = makeRoom();
+    room.__state.isMicrophoneEnabled = false; // host hasn't published yet
+    const { result } = renderHook(() =>
+      useMicrophoneState({ gateUntilAgentReady: true, agentState: "idle" }),
+    );
+    act(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      result.current.attachRoom(room as any);
+    });
+    expect(result.current.isMuted).toBe(true); // truthful: no mic yet
+
+    // Host publishes the mic → icon must clear.
+    act(() => {
+      room.__state.isMicrophoneEnabled = true;
+      room.__emit("localTrackPublished");
+    });
+    expect(result.current.isMuted).toBe(false);
+
+    // Host mutes later → icon must go red again.
+    act(() => {
+      room.__state.isMicrophoneEnabled = false;
+      room.__emit("trackMuted");
+    });
+    expect(result.current.isMuted).toBe(true);
+  });
+
+  it("gate release syncs the icon to reality when the host changed the mic mid-gate", async () => {
+    const room = makeRoom();
+    let agentState: string = "idle";
+    const { result, rerender } = renderHook(() =>
+      useMicrophoneState({ gateUntilAgentReady: true, agentState }),
+    );
+    await act(async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await result.current.setupMic(room as any);
+    });
+    expect(result.current.isMuted).toBe(true);
+
+    // Host force-enables the mic during the gate window.
+    room.__state.isMicrophoneEnabled = true;
+
+    agentState = "listening";
+    rerender();
+    // Hands off the room state, but the icon must reflect the hot mic.
+    await waitFor(() => expect(result.current.isMuted).toBe(false));
   });
 
   it("teardownMic re-arms the gate so the next setupMic re-mutes", async () => {

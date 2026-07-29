@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createLocalAudioTrack,
+  RoomEvent,
   type LocalAudioTrack,
   type Room,
 } from "livekit-client";
@@ -116,6 +117,8 @@ export function useMicrophoneState(
     active: gateEnabled,
     lastAutoIntent: null,
   });
+  // Controlled-mode room-state sync teardown (see attachRoom).
+  const roomSyncCleanupRef = useRef<(() => void) | null>(null);
 
   const setupMic = useCallback(async (room: Room) => {
     // Replace any prior track cleanly.
@@ -166,6 +169,33 @@ export function useMicrophoneState(
 
   const attachRoom = useCallback((room: Room) => {
     roomRef.current = room;
+    // 0.25.1: controlled-mode truth sync. attachRoom means the HOST owns
+    // the mic track — the boot-gate's "assume muted" init is meaningless
+    // here and used to leave the mic icon stuck red while the host's mic
+    // was live (the release effect only unmuted when the room state
+    // matched our own lastAutoIntent, which stays null when setupMic
+    // never runs). Mirror the room's real state now and on every local
+    // publish/mute change so the icon never lies about a hot mic.
+    gateRef.current.active = false;
+    roomSyncCleanupRef.current?.();
+    const sync = () => {
+      // Internal mode owns its state via setupMic/toggleMute — never
+      // fight it. Only mirror when the hook doesn't own a track.
+      if (trackRef.current) return;
+      setIsMuted(!room.localParticipant.isMicrophoneEnabled);
+    };
+    sync();
+    room.on(RoomEvent.LocalTrackPublished, sync);
+    room.on(RoomEvent.LocalTrackUnpublished, sync);
+    room.on(RoomEvent.TrackMuted, sync);
+    room.on(RoomEvent.TrackUnmuted, sync);
+    roomSyncCleanupRef.current = () => {
+      room.off(RoomEvent.LocalTrackPublished, sync);
+      room.off(RoomEvent.LocalTrackUnpublished, sync);
+      room.off(RoomEvent.TrackMuted, sync);
+      room.off(RoomEvent.TrackUnmuted, sync);
+      roomSyncCleanupRef.current = null;
+    };
   }, []);
 
   const switchDevice = useCallback(async (deviceId: string) => {
@@ -237,11 +267,17 @@ export function useMicrophoneState(
       void local.setMicrophoneEnabled(true);
       gateRef.current.lastAutoIntent = true;
       setIsMuted(false);
+    } else {
+      // Someone else (host gate, external logic) changed the room mic
+      // during the gate window. Leave their state alone, but make the
+      // icon reflect reality instead of the gate's stale "muted".
+      setIsMuted(!local.isMicrophoneEnabled);
     }
     gateRef.current.active = false;
   }, [agentState]);
 
   const teardownMic = useCallback(() => {
+    roomSyncCleanupRef.current?.();
     const track = trackRef.current;
     const room = roomRef.current;
     if (track && room) {
@@ -259,6 +295,10 @@ export function useMicrophoneState(
     setIsMuted(gateEnabled);
     setActiveDeviceId("");
   }, [gateEnabled]);
+
+  // Drop room-sync listeners on unmount — controlled consumers aren't
+  // required to call teardownMic (they own the track lifecycle).
+  useEffect(() => () => roomSyncCleanupRef.current?.(), []);
 
   const clearError = useCallback(() => setMicError(null), []);
 
