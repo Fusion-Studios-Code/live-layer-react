@@ -56,6 +56,9 @@ export default defineConfig({
         // server-side evaluation on this module. The bundler strips
         // module-level directives; the banner puts it back on the bundle.
         banner: '"use client";',
+        // Rolldown's default ('auto') keeps only directives already in the
+        // source, so the CJS bundle lost the "use strict" Rollup used to add.
+        strict: true,
       },
     },
   },

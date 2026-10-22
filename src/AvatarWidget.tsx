@@ -1718,6 +1718,10 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     apiKey,
     sessionEndpoint,
     sessionBody,
+    // The mic hook below publishes the microphone and holds it muted until
+    // the agent is ready. If the SDK published one too, the room carried two
+    // mic tracks and that boot gate muted only one of them (SDK 0.9.0+).
+    publishMicrophone: false,
     onDataMessage: controlledSession ? undefined : handleDataMessage,
   });
 
