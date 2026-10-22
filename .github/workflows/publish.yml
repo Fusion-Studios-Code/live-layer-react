@@ -7,20 +7,61 @@ on:
   pull_request:
     branches: [main]
 
-jobs:
-  build-test:
-    name: Build & Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+permissions:
+  contents: read
 
-      - uses: actions/setup-node@v4
+jobs:
+  # The lockfile pins React 19 for development, but the peer range is
+  # react >=18 and customer sites still run 18, so test against both.
+  test:
+    name: Test (React ${{ matrix.react }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        react: ["18.3", "19.3"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           cache: "npm"
 
       - run: npm ci --ignore-scripts
+
+      - name: Install React ${{ matrix.react }}
+        run: npm install --no-save --ignore-scripts react@~${{ matrix.react }}.0 react-dom@~${{ matrix.react }}.0
+
+      - name: Check the React version under test
+        run: |
+          node -e '
+            const want = process.argv[1] + ".";
+            for (const pkg of ["react", "react-dom"]) {
+              const got = require(pkg + "/package.json").version;
+              console.log(pkg, got);
+              if (!got.startsWith(want)) {
+                console.error(`expected ${pkg} ${want}x, got ${got}`);
+                process.exit(1);
+              }
+            }
+          ' "${{ matrix.react }}"
+
       - run: npm test
+
+  build:
+    name: Typecheck & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
       - run: npm run build
 
       - name: Verify dist output
@@ -29,10 +70,17 @@ jobs:
           test -f dist/index.mjs  || (echo "Missing dist/index.mjs"  && exit 1)
           test -f dist/index.d.ts || (echo "Missing dist/index.d.ts" && exit 1)
           test -f dist/styles.css || (echo "Missing dist/styles.css" && exit 1)
+          # Next.js App Router consumers need the directive at the very top
+          # of both bundles (the build adds it as a banner).
+          for f in dist/index.mjs dist/index.js; do
+            if [ "$(head -c 13 "$f")" != '"use client";' ]; then
+              echo "$f does not start with \"use client\";" && exit 1
+            fi
+          done
 
       - name: Upload dist artifact
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -52,28 +100,49 @@ jobs:
   # then bump this package and tag.
   publish-npm:
     name: Publish to npm
-    needs: build-test
+    needs: [test, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      # No npm cache in the release job: nothing is installed here, and a
+      # release should not restore a cache other workflows can write.
+      - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
-          cache: "npm"
 
-      # OIDC Trusted Publishing landed in npm 11.5.1.  Node 20 ships
-      # with npm 10, so upgrade explicitly before publish.
-      - name: Upgrade npm
-        run: npm install -g npm@latest && npm --version
+      - name: Check the tag matches package.json
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "$expected" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version ($expected). Bump the version in the tagged commit or re-tag."
+            exit 1
+          fi
+
+      # OIDC Trusted Publishing needs npm >= 11.5.1. Node 24 bundles npm
+      # 11, so use it as shipped. Do not `npm install -g npm@latest`: that
+      # resolves to whatever major is newest (npm 12 needs a newer Node)
+      # and broke the v0.25.1 publish.
+      - name: Check npm supports trusted publishing
+        run: |
+          node -e '
+            const v = process.argv[1];
+            const [maj, min, pat] = v.split(".").map(Number);
+            const ok = maj > 11 || (maj === 11 && (min > 5 || (min === 5 && pat >= 1)));
+            console.log("npm", v);
+            if (!ok) {
+              console.error(`npm ${v} is older than 11.5.1, which trusted publishing needs`);
+              process.exit(1);
+            }
+          ' "$(npm --version)"
 
       - name: Download dist artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/

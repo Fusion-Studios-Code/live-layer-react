@@ -1,7 +1,9 @@
 import { defineConfig } from "vite";
 import dts from "vite-plugin-dts";
 import { copyFileSync, mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = fileURLToPath(new URL(".", import.meta.url));
 
 // Ship styles.css as a separate asset so consumers import it explicitly:
 //   import "@livelayer/react/styles.css";
@@ -10,16 +12,16 @@ import { resolve } from "node:path";
 const copyStyles = () => ({
   name: "ll-copy-styles",
   closeBundle() {
-    const src = resolve(__dirname, "src/styles.css");
-    const dest = resolve(__dirname, "dist/styles.css");
-    mkdirSync(resolve(__dirname, "dist"), { recursive: true });
-    copyFileSync(src, dest);
+    mkdirSync(`${root}dist`, { recursive: true });
+    copyFileSync(`${root}src/styles.css`, `${root}dist/styles.css`);
   },
 });
 
 export default defineConfig({
   plugins: [
-    dts({ rollupTypes: true }),
+    // bundleTypes rolls the declarations into one dist/index.d.ts through
+    // @microsoft/api-extractor (vite-plugin-dts 5 renamed rollupTypes).
+    dts({ bundleTypes: true }),
     copyStyles(),
   ],
   build: {
@@ -29,7 +31,7 @@ export default defineConfig({
       formats: ["es", "cjs"],
       fileName: (format) => (format === "es" ? "index.mjs" : "index.js"),
     },
-    rollupOptions: {
+    rolldownOptions: {
       external: [
         "react",
         "react-dom",
@@ -37,14 +39,22 @@ export default defineConfig({
         "@livelayer/sdk",
         "livekit-client",
       ],
+      // The bundler drops module-level "use client" directives and warns
+      // once per file that has one. The banner below restores the
+      // directive on the bundle, so those warnings are expected noise.
+      onwarn(warning, defaultHandler) {
+        if (
+          warning.code === "MODULE_LEVEL_DIRECTIVE" &&
+          warning.message.includes('"use client"')
+        ) {
+          return;
+        }
+        defaultHandler(warning);
+      },
       output: {
-        globals: {
-          react: "React",
-          "react-dom": "ReactDOM",
-        },
         // Preserve "use client" so Next.js App Router consumers don't hit
-        // server-side evaluation on this module. Rollup strips module-level
-        // directives during tree-shake; banner puts it back on the bundle.
+        // server-side evaluation on this module. The bundler strips
+        // module-level directives; the banner puts it back on the bundle.
         banner: '"use client";',
       },
     },

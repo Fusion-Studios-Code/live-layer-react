@@ -5,6 +5,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { Track, type Room } from "livekit-client";
+import { publishJsonReliable } from "../utils/dataPayload";
 
 export interface ScreenShareStateHandle {
   isEnabled: boolean;
@@ -49,12 +50,11 @@ export function useScreenShareState(): ScreenShareStateHandle {
           const el = pub.track.attach() as HTMLVideoElement;
           setPreviewEl(el);
           setIsEnabled(true);
-          try {
-            room.localParticipant.publishData(
-              new TextEncoder().encode(JSON.stringify({ type: "user_screen_share_on" })),
-              { reliable: true },
-            );
-          } catch { /* best effort */ }
+          void publishJsonReliable(
+            room.localParticipant,
+            { type: "user_screen_share_on" },
+            "user_screen_share_on",
+          );
           return;
         }
         if (tries++ < 10) setTimeout(pickUp, 100);

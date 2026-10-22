@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook } from "@testing-library/react";
+import { createElement } from "react";
+import { renderToString } from "react-dom/server";
 import { useIsMobile } from "./useIsMobile";
 
 // jsdom ships a stub matchMedia that always returns matches:false; override
@@ -105,5 +107,59 @@ describe("useIsMobile", () => {
     expect(getMql().listeners.length).toBe(1);
     unmount();
     expect(getMql().listeners.length).toBe(0);
+  });
+
+  describe("initialValue (SSR user-agent hint)", () => {
+    // Server render: effects never run, so the markup shows exactly what
+    // the hook returns before hydration.
+    const label = (isMobile: boolean) =>
+      createElement("span", null, isMobile ? "mobile" : "desktop");
+    function SeededProbe(props: { initialValue: boolean }) {
+      return label(useIsMobile(768, props.initialValue));
+    }
+    function UnseededProbe() {
+      return label(useIsMobile(768));
+    }
+
+    it("server-renders the seed when one is passed", () => {
+      expect(
+        renderToString(createElement(SeededProbe, { initialValue: true })),
+      ).toContain("mobile");
+      expect(
+        renderToString(createElement(SeededProbe, { initialValue: false })),
+      ).toContain("desktop");
+    });
+
+    it("server-renders false when no seed is passed (unchanged default)", () => {
+      expect(renderToString(createElement(UnseededProbe))).toContain("desktop");
+    });
+
+    it("first client render uses the seed, then matchMedia takes over", () => {
+      installMatchMedia(false);
+      const seen: boolean[] = [];
+      const { result } = renderHook(() => {
+        const value = useIsMobile(768, true);
+        seen.push(value);
+        return value;
+      });
+      expect(seen[0]).toBe(true);
+      expect(result.current).toBe(false);
+    });
+
+    it("keeps a correct seed without flipping on mount", () => {
+      installMatchMedia(true);
+      const seen: boolean[] = [];
+      renderHook(() => {
+        const value = useIsMobile(768, true);
+        seen.push(value);
+        return value;
+      });
+      expect(new Set(seen)).toEqual(new Set([true]));
+    });
+
+    it("breakpoint === false still forces false after mount, whatever the seed", () => {
+      const { result } = renderHook(() => useIsMobile(false, true));
+      expect(result.current).toBe(false);
+    });
   });
 });
