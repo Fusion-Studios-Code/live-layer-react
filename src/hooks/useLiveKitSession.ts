@@ -114,6 +114,9 @@ export function useLiveKitSession(
         apiKey: options.apiKey,
         sessionEndpoint: options.sessionEndpoint,
         sessionBody: options.sessionBody,
+        // Undefined keeps the SDK default (it publishes the microphone).
+        // AvatarWidget passes false because its mic hook owns that track.
+        publishMicrophone: options.publishMicrophone,
       },
       callbacks,
     );

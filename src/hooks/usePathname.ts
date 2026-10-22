@@ -21,15 +21,16 @@ import { useEffect, useState } from "react";
 const HISTORY_PATCH_MARKER = "__llHistoryPatched";
 const PATHNAME_EVENT = "ll:pathname";
 
-declare global {
-  interface History {
-    [HISTORY_PATCH_MARKER]?: boolean;
-  }
-}
+// Typed locally rather than through a `declare global` History
+// augmentation: the bundled index.d.ts would carry that augmentation into
+// every consumer's global scope without the constant it references, which
+// fails a consumer typecheck that runs with skipLibCheck off.
+type PatchableHistory = History & { [HISTORY_PATCH_MARKER]?: boolean };
 
 function patchHistoryOnce() {
   if (typeof window === "undefined") return;
-  if (window.history[HISTORY_PATCH_MARKER]) return;
+  const history = window.history as PatchableHistory;
+  if (history[HISTORY_PATCH_MARKER]) return;
 
   const origPush = window.history.pushState;
   const origReplace = window.history.replaceState;
@@ -46,7 +47,7 @@ function patchHistoryOnce() {
     return result;
   };
 
-  window.history[HISTORY_PATCH_MARKER] = true;
+  history[HISTORY_PATCH_MARKER] = true;
 }
 
 function readPathname(): string {

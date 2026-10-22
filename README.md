@@ -214,6 +214,8 @@ Or attach extra app state without replacing the walker:
 />
 ```
 
+Each reply has to fit in one LiveKit data packet (64,000 bytes). The widget keeps `pageContextExtras` to 16 KB of JSON. If a reply is still too big, the widget trims it rather than dropping it: first links, then the flat field list, select options, text, extras, regions, and finally forms from the end of the list. Whatever it cut is listed in `context.truncated`.
+
 ### 4. Let the agent click + scroll + fill forms (0.4.0)
 
 **Click anything the agent should be able to trigger**: tag interactive elements with `data-ll-action` (or any selector you want — `button[aria-label="..."]` works too).
@@ -362,7 +364,9 @@ See the *Structured data collection* section above for `onCollect` /
 
 ### Hooks (power users)
 
-`useLiveKitSession`, `useDisplayMode`, `useAgentInfo`, `usePathname`, `useRouteMatch`, `useAudioLevel`, `useMicrophoneState`, `useCameraState`, `useScreenShareState`, `useMediaDevices`, `useTranscript`. All exported from the package root.
+`useLiveKitSession`, `useDisplayMode`, `useAgentInfo`, `usePathname`, `useRouteMatch`, `useAudioLevel`, `useMicrophoneState`, `useCameraState`, `useScreenShareState`, `useMediaDevices`, `useTranscript`, `useIsMobile`. All exported from the package root.
+
+`useIsMobile(breakpoint = 640, initialValue = false)` returns `initialValue` on the server and on the first client render, then follows `matchMedia`. To avoid a layout flip on hydration, pass a server-side hint, e.g. in Next.js `userAgent({ headers: await headers() }).device.type === "mobile"` from `next/server`.
 
 ### Types
 

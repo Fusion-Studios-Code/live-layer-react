@@ -11,6 +11,7 @@ import {
   type LocalVideoTrack,
   type Room,
 } from "livekit-client";
+import { publishJsonReliable } from "../utils/dataPayload";
 
 export interface CameraStateHandle {
   isEnabled: boolean;
@@ -81,12 +82,7 @@ export function useCameraState(): CameraStateHandle {
       setIsEnabled(true);
       if (deviceId) setActiveDeviceId(deviceId);
       // Tell the agent we turned the camera on. Best-effort data message.
-      try {
-        room.localParticipant.publishData(
-          new TextEncoder().encode(JSON.stringify({ type: "user_camera_on" })),
-          { reliable: true },
-        );
-      } catch { /* best effort */ }
+      void publishJsonReliable(room.localParticipant, { type: "user_camera_on" }, "user_camera_on");
     } catch (err) {
       const msg =
         err instanceof Error && err.name === "NotAllowedError"

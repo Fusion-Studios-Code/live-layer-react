@@ -161,6 +161,12 @@ import {
   clearRoutesCache,
   normalizeRouteInput,
 } from "./utils/extractRoutes";
+import {
+  encodePageContextReply,
+  encodeRoutesReply,
+  publishJsonReliable,
+  publishReliable,
+} from "./utils/dataPayload";
 import { findFillableFieldInForm } from "./utils/findFieldInForm";
 import { fillField } from "./utils/fillField";
 import { findFormByLooseId } from "./utils/findFormByLooseId";
@@ -1020,13 +1026,26 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           const room = sender as any;
           const localParticipant = room?.localParticipant;
           if (!localParticipant?.publishData) return;
-          try {
-            const out = requestId ? { ...payload, requestId } : payload;
-            const data = new TextEncoder().encode(JSON.stringify(out));
-            void localParticipant.publishData(data, { reliable: true });
-          } catch (err) {
-            console.warn("[LiveLayer] publishData failed.", err);
+          const out = requestId ? { ...payload, requestId } : payload;
+          if (payload.type !== "page_context") {
+            void publishJsonReliable(localParticipant, out, "request_page_context");
+            return;
           }
+          // Host extras and big forms can push a reply past LiveKit's
+          // 64,000-byte packet limit; trim it rather than lose it.
+          const encoded = encodePageContextReply(out);
+          if (!encoded) {
+            console.warn(
+              "[LiveLayer] request_page_context: reply does not fit one data packet even after trimming. Not sent.",
+            );
+            return;
+          }
+          if (encoded.truncated.length > 0) {
+            console.warn(
+              `[LiveLayer] request_page_context: reply trimmed to fit the data-channel limit (cut: ${encoded.truncated.join(", ")}).`,
+            );
+          }
+          void publishReliable(localParticipant, encoded.data, "request_page_context");
         };
 
         const extras = pageContextExtrasRef.current;
@@ -1355,13 +1374,8 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           const room = sender as any;
           const lp = room?.localParticipant;
           if (!lp?.publishData) return;
-          try {
-            const out = requestId ? { ...payload, requestId } : payload;
-            const data = new TextEncoder().encode(JSON.stringify(out));
-            void lp.publishData(data, { reliable: true });
-          } catch {
-            // best effort
-          }
+          const out = requestId ? { ...payload, requestId } : payload;
+          void publishJsonReliable(lp, out, "submit_form");
         };
         // Collect the names of fields failing native HTML5 validation so
         // the agent can name the offending field(s) instead of guessing.
@@ -1539,15 +1553,22 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
         if (!lp?.publishData) return;
 
         const publish = (routes: import("./utils/extractRoutes").ExtractedRoute[]) => {
-          try {
-            const payload = requestId
-              ? { type: "routes", routes, requestId }
-              : { type: "routes", routes };
-            const data = new TextEncoder().encode(JSON.stringify(payload));
-            void lp.publishData(data, { reliable: true });
-          } catch (err) {
-            console.warn("[LiveLayer] request_routes: publishData failed.", err);
+          const base = requestId
+            ? { type: "routes", requestId }
+            : { type: "routes" };
+          // A host getRoutes list (up to 200 entries with descriptions)
+          // can pass the 64,000-byte packet limit; send the routes that fit.
+          const encoded = encodeRoutesReply(base, routes);
+          if (!encoded) {
+            console.warn("[LiveLayer] request_routes: reply does not fit one data packet. Not sent.");
+            return;
           }
+          if (encoded.dropped > 0) {
+            console.warn(
+              `[LiveLayer] request_routes: sent ${routes.length - encoded.dropped} of ${routes.length} routes to fit the data-channel limit.`,
+            );
+          }
+          void publishReliable(lp, encoded.data, "request_routes");
         };
 
         // Consumer-supplied route source wins. This is the right answer
@@ -1697,6 +1718,10 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     apiKey,
     sessionEndpoint,
     sessionBody,
+    // The mic hook below publishes the microphone and holds it muted until
+    // the agent is ready. If the SDK published one too, the room carried two
+    // mic tracks and that boot gate muted only one of them (SDK 0.9.0+).
+    publishMicrophone: false,
     onDataMessage: controlledSession ? undefined : handleDataMessage,
   });
 
@@ -2062,21 +2087,20 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   const handleSendMessage = useCallback((text: string) => {
     const payload = { type: "user_message", text };
     if (controlledSession?.publishData) {
+      // The host's publishData may throw or return a rejected promise;
+      // either way the typed message is best effort.
+      const warn = (err: unknown) =>
+        console.warn("[LiveLayer] user_message (controlled): publishData failed.", err);
       try {
-        void controlledSession.publishData(payload);
-      } catch {
-        // best effort — ignore
+        Promise.resolve(controlledSession.publishData(payload)).catch(warn);
+      } catch (err) {
+        warn(err);
       }
       return;
     }
     const room = session.getRoom();
     if (!room) return;
-    try {
-      const data = new TextEncoder().encode(JSON.stringify(payload));
-      void room.localParticipant.publishData(data, { reliable: true });
-    } catch {
-      // best effort — ignore
-    }
+    void publishJsonReliable(room.localParticipant, payload, "user_message");
   }, [session, controlledSession]);
 
   const toggleSpeaker = useCallback(() => {

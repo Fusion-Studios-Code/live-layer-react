@@ -193,6 +193,14 @@ export interface PageContext {
   extras?: Record<string, unknown>;
   /** Runtime-inferred wizard structure; absent on a plain single-page form. */
   flow?: FlowContext;
+  /**
+   * Set by the widget when the reply had to be cut to fit LiveKit's
+   * 64,000-byte data-packet limit. Lists what was shortened or dropped,
+   * in order: "extras", "visibleLinks", "visibleFields", "formOptions",
+   * "visibleText", "regions", "forms", and "all" when only url, title
+   * and pathname were sent. Absent on a complete snapshot.
+   */
+  truncated?: string[];
 }
 
 // ── Capabilities (0.4.0) ─────────────────────────────────────────────────
