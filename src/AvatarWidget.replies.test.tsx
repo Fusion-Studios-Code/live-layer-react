@@ -633,6 +633,81 @@ describe("refusals are answered, not left to time out", () => {
   });
 });
 
+describe("the confirmation chime plays only when a form is acted on", () => {
+  /** Stubs Audio and returns the src of every sound the widget started. */
+  function stubAudio() {
+    const played: string[] = [];
+    class FakeAudio {
+      src: string;
+      loop = false;
+      volume = 1;
+      constructor(src: string) {
+        this.src = src;
+        played.push(src);
+      }
+      play() {
+        return Promise.resolve();
+      }
+      pause() {}
+    }
+    vi.stubGlobal("Audio", FakeAudio);
+    return played;
+  }
+  const chimes = (played: string[]) =>
+    played.filter((src) => src.endsWith("/audio/confirmation-sound.mp3")).length;
+  const actionSoundsOnly = { soundEffects: { action: true, navigate: false, thinking: false } };
+
+  it("does not chime for a submit_form it refuses, and chimes for one it carries out", async () => {
+    // A single public form: an unknown id is refused, not submitted.
+    document.body.innerHTML = `
+      <form id="contact"><input name="email" value="a@b.test" /></form>
+      <div data-ll-skip><form id="payment"><input name="card" value="4242" /></form></div>`;
+    const form = document.getElementById("contact") as HTMLFormElement;
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      setTimeout(() => clearFields(form), 50);
+    });
+    const played = stubAudio();
+    const publishData = vi.fn();
+    const dispatch = renderControlled({ publishData }, actionSoundsOnly);
+
+    dispatch({ type: "submit_form", formId: "checkout", requestId: "ch-1" });
+    dispatch({ type: "submit_form", formId: "payment", requestId: "ch-2" });
+    dispatch({ type: "submit_form", requestId: "ch-3" });
+    await waitFor(() => expect(publishData).toHaveBeenCalledTimes(3));
+    expect(hostReplies(publishData).map((r) => r.reason)).toEqual([
+      "form_not_found",
+      "form_not_found",
+      "missing_form_id",
+    ]);
+    expect(chimes(played)).toBe(0);
+
+    dispatch({ type: "submit_form", formId: "contact", requestId: "ch-4" });
+    expect(chimes(played)).toBe(1);
+    await waitFor(() => expect(publishData).toHaveBeenCalledTimes(4), { timeout: 3000 });
+    expect(hostReplies(publishData)[3]).toMatchObject({ type: "form_submitted", requestId: "ch-4" });
+  });
+
+  it("does not chime for a fill_form whose form it cannot use, and chimes for one it fills", () => {
+    document.body.innerHTML = `
+      <form id="signup"><input name="email" /></form>
+      <form id="newsletter"><input name="topic" /></form>
+      <div data-ll-private><form id="account"><input name="nickname" /></form></div>`;
+    const played = stubAudio();
+    const dispatch = renderControlled({ publishData: vi.fn() }, actionSoundsOnly);
+
+    dispatch({ type: "fill_form", formId: "checkout", values: { email: "a@b.test" } });
+    dispatch({ type: "fill_form", formId: "account", values: { nickname: "x" } });
+    dispatch({ type: "fill_form", values: { email: "a@b.test" } });
+    expect(chimes(played)).toBe(0);
+    expect((document.querySelector('input[name="nickname"]') as HTMLInputElement).value).toBe("");
+
+    dispatch({ type: "fill_form", formId: "signup", values: { email: "a@b.test" } });
+    expect(chimes(played)).toBe(1);
+    expect((document.querySelector('input[name="email"]') as HTMLInputElement).value).toBe("a@b.test");
+  });
+});
+
 function clearFields(form: HTMLFormElement) {
   for (const el of Array.from(form.elements)) {
     if (el instanceof HTMLInputElement) el.value = "";

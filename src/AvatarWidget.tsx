@@ -1317,11 +1317,6 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           return;
         }
         if (typeof document === "undefined") return;
-        // Confirmation chime on fill (focus_field is just keyboard
-        // movement, no chime — would feel noisy).
-        if (cmd.type === "fill_form") {
-          soundsRef.current.playConfirmation();
-        }
         const formId = typeof cmd.formId === "string" ? cmd.formId : null;
         if (!formId) {
           console.warn(`[LiveLayer] ${cmd.type}: missing formId.`);
@@ -1340,6 +1335,12 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
             `[LiveLayer] ${cmd.type}: refusing to touch a form in a private / opted-out subtree.`,
           );
           return;
+        }
+        // Confirmation chime on fill, once the form is one the widget will
+        // touch (focus_field is just keyboard movement, no chime — would
+        // feel noisy).
+        if (cmd.type === "fill_form") {
+          soundsRef.current.playConfirmation();
         }
 
         if (cmd.type === "focus_field") {
@@ -1423,10 +1424,6 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           refuseSubmit(cmd, "missing_form_id");
           return;
         }
-        // Confirmation chime — fired BEFORE submit; if validation
-        // blocks, the chime still feels right because the agent did
-        // the right thing, browser is just enforcing constraints.
-        soundsRef.current.playConfirmation();
         // Strict lookup: only a positional form_<n> id may fall back to the
         // page's only form. An unknown id, or one naming a private /
         // data-ll-skip form (which the lookup never resolves), is refused
@@ -1448,6 +1445,11 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           refuseSubmit(cmd, "form_private");
           return;
         }
+        // Confirmation chime — after the lookup and the private guard, so a
+        // refused submit (nothing sent) is silent, and BEFORE submit: if
+        // validation blocks, the chime still feels right because the agent
+        // did the right thing, browser is just enforcing constraints.
+        soundsRef.current.playConfirmation();
         // Listen for the submit event so we can publish form_submitted /
         // form_submit_blocked back to the agent. requestSubmit fires the
         // submit event AND runs HTML5 validation; if validation fails,
