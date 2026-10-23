@@ -13,11 +13,6 @@ import { AvatarWidget, type ControlledSession } from "./AvatarWidget";
 import { clearPageContextCache } from "./utils/extractPageContext";
 import { clearRoutesCache } from "./utils/extractRoutes";
 import { MAX_DATA_PAYLOAD_BYTES } from "./utils/dataPayload";
-import {
-  READ_PAGE_BLOCKED_MESSAGE,
-  ROUTES_BLOCKED_MESSAGE,
-  SUBMIT_BLOCKED_MESSAGE,
-} from "./utils/agentReply";
 
 type DataHandler = (msg: Record<string, unknown>) => void;
 type PublishSpy = ReturnType<typeof vi.fn>;
@@ -367,7 +362,9 @@ describe("controlled mode: replies go out through the controlled session", () =>
 });
 
 // Refusals use the script-tag widget's protocol (@livelayer/sdk 0.10): the
-// request's normal reply type, plus error / capability / message.
+// request's normal reply type, plus error / capability / message. The exact
+// message strings are pinned in utils/agentReply.test.ts; this file imports
+// only modules main has, so it can run against main.
 describe("refusals are answered, not left to time out", () => {
   it("answers request_page_context with a page_context refusal when read_page is not allowed", async () => {
     const publishData = vi.fn();
@@ -379,7 +376,7 @@ describe("refusals are answered, not left to time out", () => {
     const refusal = {
       error: "capability_blocked",
       capability: "read_page",
-      message: READ_PAGE_BLOCKED_MESSAGE,
+      message: expect.stringMatching(/^Reading the page is turned off on this site .+ ask the visitor\.$/),
     };
     expect(hostReplies(publishData)[0]).toEqual({
       type: "page_context",
@@ -401,7 +398,7 @@ describe("refusals are answered, not left to time out", () => {
       type: "routes",
       error: "capability_blocked",
       capability: "read_page",
-      message: ROUTES_BLOCKED_MESSAGE,
+      message: expect.stringMatching(/^Reading the page is turned off on this site .+ list its links\. Don't call get_routes .+ ask the visitor\.$/),
       routes: [],
       requestId: "rt-4",
     });
@@ -454,18 +451,20 @@ describe("refusals are answered, not left to time out", () => {
     dispatch({ type: "submit_form", formId: "contact", requestId: "sf-2" });
 
     await waitFor(() => expect(publishData).toHaveBeenCalledTimes(1));
-    expect(hostReplies(publishData)[0]).toEqual({
+    const [reply] = hostReplies(publishData);
+    expect(reply).toEqual({
       type: "form_submit_blocked",
       formId: "contact",
       reason: "capability_blocked",
-      // The worker prints invalidFields (not `message`) to the LLM, and
-      // adds the final period.
-      invalidFields: [SUBMIT_BLOCKED_MESSAGE.slice(0, -1)],
+      invalidFields: [expect.any(String)],
       error: "capability_blocked",
       capability: "submit_forms",
-      message: SUBMIT_BLOCKED_MESSAGE,
+      message: expect.stringMatching(/^Submitting forms is turned off on this site .+ submit button\.$/),
       requestId: "sf-2",
     });
+    // The worker prints invalidFields (not `message`) to the LLM, and adds
+    // the final period.
+    expect(reply!.invalidFields[0]).toBe(reply!.message.slice(0, -1));
     expect(submitted).not.toHaveBeenCalled();
   });
 
