@@ -244,7 +244,7 @@ The agent emits `{ type: "click", selector: "[data-ll-action='open-pricing-modal
 The agent sees these in `PageContext.forms` and calls:
 - `fill_form` — sets values via the canonical native-setter pattern (your `onChange` listeners fire correctly). Use when the agent already has all the answers.
 - `collect_from_page` — runs a guided sub-conversation that asks for each field one at a time, normalizes spoken input per kind (email letter-by-letter, phone digit grouping, etc), and delivers a typed `onCollect` payload. Use when the visitor wants to fill the form by voice. See [Structured data collection](#structured-data-collection-0120) above.
-- `submit_form` — calls `form.requestSubmit()`. Publishes `{ type: "form_submitted", formId }` on success or `{ type: "form_submit_blocked", formId, reason: "validation" }` on HTML5 validation failure.
+- `submit_form` — calls `form.requestSubmit()`. Publishes `{ type: "form_submitted", formId }` on success or `{ type: "form_submit_blocked", formId, reason: "validation" }` on HTML5 validation failure. A submit the widget does not carry out is answered too, as `form_submit_blocked` with `reason` set to `capability_blocked`, `missing_form_id`, `form_not_found` or `form_private`, so the agent knows at once that nothing was sent.
 
 Form IDs are inferred from the form's existing `id` / `name` attribute, falling back to a `data-ll-intent` slug, finally `form_<index>`.
 
@@ -275,9 +275,13 @@ Compliance / safety knob: pass an allowlist.
 
 Default (`capabilities` undefined) = all enabled. **Recommended starter**: omit `submit_forms` for the first few weeks of production. Filling is reversible, submitting isn't.
 
+A blocked request the agent waits on is answered rather than left to time out: `request_page_context` and `request_routes` get `{ type: "tool_error", requestId, command, reason: "capability_blocked", capability: "read_page" }`, and `submit_form` gets `form_submit_blocked` with `reason: "capability_blocked"`. Blocked fire-and-forget commands (`navigate`, `fill_form`, ...) carry no `requestId` and are not answered.
+
 ### 6. Persist the session across pages (multi-page apps)
 
 For SPAs (Next.js, Remix, React Router), mount the widget at the app root and the session survives route changes automatically. For multi-page apps where the entire React tree unmounts, use `controlledSession` to own the LiveKit Room yourself and keep it alive across reloads. See [the `ControlledSession` interface](src/AvatarWidget.tsx) for the contract.
+
+In controlled mode the widget answers the agent's requests (`page_context`, `routes`, the `submit_form` outcome, `tool_error`) through your session: `controlledSession.publishData` when you pass it, otherwise the Room returned by `controlledSession.getRoom()` (published reliable, no topic). Pass at least one of them, or those requests time out on the agent's side.
 
 ### 7. Custom branding
 

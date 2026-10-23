@@ -60,6 +60,11 @@ function tryEncode(value: unknown): Uint8Array | null {
   return json === undefined ? null : encoder.encode(json);
 }
 
+/** JSON-encode a message to UTF-8, or null when it cannot be serialized. */
+export function encodeJson(message: Record<string, unknown>): Uint8Array | null {
+  return tryEncode(message);
+}
+
 /** Cut a string to at most `maxBytes` UTF-8 bytes, ending with an ellipsis. */
 export function truncateToBytes(text: string, maxBytes: number): string {
   const bytes = encoder.encode(text);
