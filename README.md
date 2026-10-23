@@ -103,7 +103,7 @@ function Progress() {
 <form data-ll-intent="request a demo">  // disambiguate (still visible)
 ```
 
-`type="password"`, `autocomplete="cc-*"`, and `autocomplete="off"` are ALWAYS excluded — you don't have to mark them.
+`type="password"`, `autocomplete="cc-*"`, and `autocomplete="off"` are ALWAYS excluded — you don't have to mark them. (One exception, in the form manifest: see [Privacy](#privacy).)
 
 See [docs.livelayer.studio/develop/data-collection](https://docs.livelayer.studio/develop/data-collection) for the full result shape, dashboard-declared field lists, slide-level data collection, capability gating, and webhook delivery.
 
@@ -395,6 +395,8 @@ The default page-context walker **never** extracts:
 
 The same rule covers the page text, links, regions, routes, form intent, the multi-step `flow` labels and forms, and the agent's `click`, `fill_form`, `focus_field` and `submit_form`. A private element nested inside an ordinary paragraph, heading, link, label or region is cut out of that element's text. A private field that fails validation still blocks `submit_form`, but it is reported as one generic `invalidFields` entry, without its label or the browser's message.
 
+**The form manifest.** When the widget owns the session (no `controlledSession`), `@livelayer/sdk` also publishes a form manifest into the LiveKit room on connect, as the visitor's `agent.context` participant attribute (the agent can read it), and republishes it as the visitor types. Unlike the page context it carries each field's **value**, next to its label and kind. It skips the same subtrees (`data-ll-private` with or without a value, `data-ll-skip`, `.ll-widget`; from `@livelayer/sdk` 0.10, which this package requires) and `type="password"`, `type="hidden"` and `autocomplete="cc-*"` inputs, and it leaves private text out of field labels. One exception: it still reports `autocomplete="off"` fields, values included. Put `data-ll-private` on such a field to keep it out.
+
 To redact additional content:
 
 ```tsx
@@ -441,6 +443,8 @@ The thin web-component wrapper from 0.1.x is still exported for backwards compat
 import { LiveLayerWidget } from "@livelayer/react";
 <LiveLayerWidget agentId="..." />
 ```
+
+It renders `@livelayer/sdk`'s `<livelayer-widget>`, so it behaves like the script tag. From 0.26.1 that is `@livelayer/sdk` 0.10, which also answers the agent's page tools: it sends the page context and routes, and carries out `fill_form`, `focus_field` and `submit_form` on your page, under the privacy rules above. One difference from `<AvatarWidget>`: on a page with a single form, its `submit_form` still treats an id that matches nothing as that form. This wrapper has no `capabilities` prop, so every capability is allowed. Use `<AvatarWidget capabilities={...}>` to restrict them.
 
 ---
 
