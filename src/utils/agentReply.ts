@@ -40,6 +40,9 @@ export interface ReplyHost {
   getRoom?: () => unknown | null;
 }
 
+/** A ReplyHost that supplied publishData. */
+type PublishingHost = ReplyHost & Required<Pick<ReplyHost, "publishData">>;
+
 /** Which connection a reply goes out on. */
 export type ReplyRoute = "room" | "host_publish" | "host_room";
 
@@ -57,7 +60,11 @@ export type SubmitRefusalReason =
   | "missing_form_id"
   /** No <form> on the page matches the formId. */
   | "form_not_found"
-  /** The matched form sits in a private / data-ll-skip subtree. */
+  /**
+   * The matched form sits in a private / data-ll-skip subtree. A guard
+   * only: the form lookup never resolves such a form, so a submit naming
+   * one is answered `form_not_found` and the agent learns nothing about it.
+   */
   | "form_private";
 
 /** Why the widget answered a request with `tool_error`. */
@@ -79,9 +86,10 @@ function localParticipantOf(room: unknown): DataPublisher | null {
     : null;
 }
 
-function safeRoom(getRoom: (() => unknown) | undefined): unknown {
+/** Run a Room getter, treating a throw as "no Room". */
+function safeRoom(get: () => unknown): unknown {
   try {
-    return getRoom?.() ?? null;
+    return get() ?? null;
   } catch {
     return null;
   }
@@ -93,7 +101,7 @@ function safeRoom(getRoom: (() => unknown) | undefined): unknown {
  * JSON, so the size check below holds for what the host sends.
  */
 function publishThroughHost(
-  publishData: NonNullable<ReplyHost["publishData"]>,
+  host: PublishingHost,
   data: Uint8Array,
   label: string,
 ): Promise<boolean> {
@@ -110,7 +118,9 @@ function publishThroughHost(
   };
   try {
     const message = JSON.parse(decoder.decode(data)) as Record<string, unknown>;
-    return Promise.resolve(publishData(message)).then(() => true, failed);
+    // A method call on the host, as the widget's sendData makes it: a
+    // class-instance host's publishData may read `this`.
+    return Promise.resolve(host.publishData(message)).then(() => true, failed);
   } catch (err) {
     return Promise.resolve(failed(err));
   }
@@ -126,19 +136,21 @@ export function resolveReplySender(
   internalRoom: (() => unknown) | undefined,
 ): ReplySender | null {
   if (controlled) {
-    const publishData = controlled.publishData;
-    if (typeof publishData === "function") {
+    // Called as methods on `controlled`, never pulled off it: a host may
+    // pass a class instance whose methods read `this`.
+    if (typeof controlled.publishData === "function") {
+      const host = controlled as PublishingHost;
       return {
         route: "host_publish",
-        send: (data, label) => publishThroughHost(publishData, data, label),
+        send: (data, label) => publishThroughHost(host, data, label),
       };
     }
-    const lp = localParticipantOf(safeRoom(controlled.getRoom));
+    const lp = localParticipantOf(safeRoom(() => controlled.getRoom?.()));
     return lp
       ? { route: "host_room", send: (data, label) => publishReliable(lp, data, label) }
       : null;
   }
-  const lp = localParticipantOf(safeRoom(internalRoom));
+  const lp = localParticipantOf(safeRoom(() => internalRoom?.()));
   return lp
     ? { route: "room", send: (data, label) => publishReliable(lp, data, label) }
     : null;

@@ -278,6 +278,59 @@ describe("controlled mode: replies go out through the controlled session", () =>
     expect(internal.publishData).not.toHaveBeenCalled();
   });
 
+  it("answers through a class-instance host whose methods read `this`", async () => {
+    // The widget calls sendData and typed messages as methods on the
+    // session, so a class-instance host works for those; replies must be
+    // method calls too.
+    const host = hostRoom();
+    class HostSession {
+      connectionState = "idle" as const;
+      agentState = "idle" as const;
+      transcript = [];
+      videoElement = null;
+      audioElement = null;
+      canResume = false;
+      error = null;
+      onConnect = vi.fn();
+      onDisconnect = vi.fn();
+      subscriber: DataHandler | null = null;
+      constructor(readonly room: typeof host.room) {}
+      subscribeToDataMessages(cb: DataHandler) {
+        this.subscriber = cb;
+        return () => {
+          this.subscriber = null;
+        };
+      }
+      publishData(data: Record<string, unknown>) {
+        return this.room.localParticipant.publishData(
+          new TextEncoder().encode(JSON.stringify(data)),
+          { reliable: true },
+        );
+      }
+      getRoom() {
+        return this.room;
+      }
+    }
+    const session = new HostSession(host.room);
+    render(<AvatarWidget agentId="test-agent" controlledSession={session} soundEffects={false} />);
+
+    act(() => {
+      session.subscriber!({ type: "request_page_context", requestId: "pc-9" });
+      session.subscriber!({ type: "request_routes", requestId: "rt-6" });
+    });
+
+    await waitFor(() => expect(host.publishData).toHaveBeenCalledTimes(2));
+    expect(roomReplies(host.publishData).map((r) => [r.type, r.requestId])).toEqual([
+      ["page_context", "pc-9"],
+      ["routes", "rt-6"],
+    ]);
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("publishData failed"),
+      expect.anything(),
+    );
+    expect(internal.publishData).not.toHaveBeenCalled();
+  });
+
   it("warns, and does not use the internal session, when the host gives no way to publish", async () => {
     const dispatch = renderControlled({ getRoom: () => null });
 
@@ -406,15 +459,77 @@ describe("refusals are answered, not left to time out", () => {
     const dispatch = renderControlled({ publishData });
 
     dispatch({ type: "submit_form", formId: "payment", requestId: "sf-5" });
+    dispatch({ type: "submit_form", formId: "account", requestId: "sf-6" });
 
-    await waitFor(() => expect(publishData).toHaveBeenCalledTimes(1));
-    expect(hostReplies(publishData)[0]).toMatchObject({
-      type: "form_submit_blocked",
-      formId: "payment",
-      reason: "form_not_found",
-      requestId: "sf-5",
-    });
+    await waitFor(() => expect(publishData).toHaveBeenCalledTimes(2));
+    expect(hostReplies(publishData)).toEqual([
+      {
+        type: "form_submit_blocked",
+        formId: "payment",
+        reason: "form_not_found",
+        invalidFields: [],
+        requestId: "sf-5",
+      },
+      {
+        type: "form_submit_blocked",
+        formId: "account",
+        reason: "form_not_found",
+        invalidFields: [],
+        requestId: "sf-6",
+      },
+    ]);
     expect(submitted).not.toHaveBeenCalled();
+  });
+
+  it("does not turn an unknown or private form id into a submit of the page's only public form", async () => {
+    document.body.innerHTML = `
+      <form id="contact"><input name="email" value="a@b.test" /></form>
+      <div data-ll-private="true"><form id="account"><input name="pw" value="x" /></form></div>
+      <div data-ll-skip><form id="payment"><input name="card" value="4242" /></form></div>`;
+    const contactSubmitted = vi.fn((e: Event) => e.preventDefault());
+    const offLimitsSubmitted = vi.fn((e: Event) => e.preventDefault());
+    document.getElementById("contact")!.addEventListener("submit", contactSubmitted);
+    document.getElementById("account")!.addEventListener("submit", offLimitsSubmitted);
+    document.getElementById("payment")!.addEventListener("submit", offLimitsSubmitted);
+    const publishData = vi.fn();
+    const dispatch = renderControlled({ publishData });
+
+    dispatch({ type: "submit_form", formId: "account", requestId: "sf-7" });
+    dispatch({ type: "submit_form", formId: "payment", requestId: "sf-8" });
+    dispatch({ type: "submit_form", formId: "does-not-exist", requestId: "sf-9" });
+
+    await waitFor(() => expect(publishData).toHaveBeenCalledTimes(3));
+    expect(hostReplies(publishData).map((r) => [r.type, r.formId, r.reason, r.requestId])).toEqual([
+      ["form_submit_blocked", "account", "form_not_found", "sf-7"],
+      ["form_submit_blocked", "payment", "form_not_found", "sf-8"],
+      ["form_submit_blocked", "does-not-exist", "form_not_found", "sf-9"],
+    ]);
+    expect(contactSubmitted).not.toHaveBeenCalled();
+    expect(offLimitsSubmitted).not.toHaveBeenCalled();
+  });
+
+  it("still submits the page's only public form for a positional form_<n> id", async () => {
+    // A generic positional id is how the agent names a form it saw without
+    // a real id; on a single-form page it stays unambiguous.
+    document.body.innerHTML = `
+      <form id="contact"><input name="email" value="a@b.test" /></form>
+      <div data-ll-private="true"><form id="account"><input name="pw" value="x" /></form></div>`;
+    const form = document.getElementById("contact") as HTMLFormElement;
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      setTimeout(() => clearFields(form), 50);
+    });
+    const publishData = vi.fn();
+    const dispatch = renderControlled({ publishData });
+
+    dispatch({ type: "submit_form", formId: "form_0", requestId: "sf-10" });
+
+    await waitFor(() => expect(publishData).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    expect(hostReplies(publishData)[0]).toMatchObject({
+      type: "form_submitted",
+      formId: "form_0",
+      requestId: "sf-10",
+    });
   });
 
   it("does not answer a blocked fire-and-forget command (it carries no requestId)", async () => {

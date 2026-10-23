@@ -100,6 +100,41 @@ describe("resolveReplySender", () => {
     expect(warn).toHaveBeenCalledWith("[LiveLayer] a: controlledSession.publishData failed.", err);
     expect(warn).toHaveBeenCalledWith("[LiveLayer] b: controlledSession.publishData failed.", err);
   });
+
+  // A host may pass a class instance whose methods read `this`. The widget
+  // calls sendData and typed messages as methods on the session, so replies
+  // must be method calls too, or they throw while everything else the host
+  // sends works.
+  class HostRoomSession {
+    constructor(protected readonly room: unknown) {}
+    getRoom() {
+      return this.room;
+    }
+  }
+  class HostPublishSession extends HostRoomSession {
+    sent: Record<string, unknown>[] = [];
+    publishData(data: Record<string, unknown>) {
+      this.sent.push(data);
+    }
+  }
+
+  it("calls a class-instance host's publishData as a method", async () => {
+    const host = new HostPublishSession(null);
+    const sender = resolveReplySender(host, () => null)!;
+    expect(sender.route).toBe("host_publish");
+    const msg = { type: "page_context", requestId: "r1", context: {} };
+    await expect(sender.send(encode(msg), "t")).resolves.toBe(true);
+    expect(host.sent).toEqual([msg]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("calls a class-instance host's getRoom as a method", async () => {
+    const r = room();
+    const sender = resolveReplySender(new HostRoomSession(r.room), () => null);
+    expect(sender?.route).toBe("host_room");
+    await expect(sender!.send(encode({ type: "routes" }), "t")).resolves.toBe(true);
+    expect(r.publishData).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("refusal shapes", () => {

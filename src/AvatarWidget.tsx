@@ -1424,7 +1424,13 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
         // blocks, the chime still feels right because the agent did
         // the right thing, browser is just enforcing constraints.
         soundsRef.current.playConfirmation();
-        const form = findFormByLooseId(document, formId);
+        // Strict lookup: only a positional form_<n> id may fall back to the
+        // page's only form. An unknown id, or one naming a private /
+        // data-ll-skip form (which the lookup never resolves), is refused
+        // as form_not_found instead of submitting some other form.
+        const form = findFormByLooseId(document, formId, {
+          singleFormFallback: "positional",
+        });
         if (!form) {
           console.warn(
             `[LiveLayer] submit_form: no <form> matched id="${formId}" (or matching name / data-ll-intent slug).`,
@@ -1822,7 +1828,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   // session never connects (its getRoom() is null), so replies go through
   // the host's controlledSession instead.
   replySenderRef.current = () =>
-    resolveReplySender(controlledSession, internalSession.getRoom);
+    resolveReplySender(controlledSession, () => internalSession.getRoom?.());
 
   // Dev-only: expose a window helper so `docs/testing/widget-command-smoke.md`
   // can dispatch synthetic agent commands without going through LiveKit.

@@ -54,6 +54,33 @@ describe("findFormByLooseId — off-limits exclusion + single-form fallback", ()
     expect(findFormByLooseId(document, "a")?.id).toBe("a");
   });
 
+  it("does not fall back to the only public form for an id that names an off-limits form", () => {
+    document.body.innerHTML = `
+      <form id="contact"><input name="email" /></form>
+      <div data-ll-private="true"><form id="account" name="acct" data-ll-intent="Update account"></form></div>
+      <div data-ll-skip><form id="payment"></form></div>
+      <div class="ll-widget"><form id="composer"></form></div>
+    `;
+    for (const id of ["account", "acct", "Update account", "update-account", "payment", "composer"]) {
+      expect(findFormByLooseId(document, id)).toBeNull();
+    }
+    // An id that names nothing still falls back for fill_form / focus_field.
+    expect(findFormByLooseId(document, "whatever")?.id).toBe("contact");
+  });
+
+  it("singleFormFallback: positional only falls back for a form_<n> id (submit_form)", () => {
+    document.body.innerHTML = `
+      <form id="contact"><input name="email" /></form>
+      <div class="ll-widget"><form><input name="msg" /></form></div>
+    `;
+    const strict = { singleFormFallback: "positional" } as const;
+    expect(findFormByLooseId(document, "contact", strict)?.id).toBe("contact");
+    expect(findFormByLooseId(document, "form_0", strict)?.id).toBe("contact");
+    expect(findFormByLooseId(document, "form_3", strict)?.id).toBe("contact");
+    expect(findFormByLooseId(document, "field_0", strict)).toBeNull();
+    expect(findFormByLooseId(document, "does-not-exist", strict)).toBeNull();
+  });
+
   it("positional form_N still disambiguates several non-widget unnamed forms", () => {
     document.body.innerHTML = `
       <form><input name="a" /></form>

@@ -17,9 +17,24 @@
 //
 // Returns null when nothing matches. Callers warn + bail.
 
+export interface FindFormOptions {
+  /**
+   * Which unmatched ids may fall back to the page's only fillable form.
+   *   - "any" (default; fill_form, focus_field): any id.
+   *   - "positional": only a positional `form_<n>` id, the generic name the
+   *     agent uses for a form it saw without a real id. submit_form uses
+   *     this, since a submit cannot be undone: an id that names no form
+   *     must not submit whichever form happens to be the only one.
+   */
+  singleFormFallback?: "any" | "positional";
+}
+
+const POSITIONAL_ID = /^form_\d+$/;
+
 export function findFormByLooseId(
   doc: Document,
   formId: string,
+  options: FindFormOptions = {},
 ): HTMLFormElement | null {
   if (!formId) return null;
   const safe = formId.replace(/"/g, '\\"');
@@ -70,7 +85,7 @@ export function findFormByLooseId(
   //    same DOM order extractPageContext walks. Skip forms that
   //    already carried a real id / name / intent, since those would
   //    have been picked above.
-  if (/^form_\d+$/.test(formId)) {
+  if (POSITIONAL_ID.test(formId)) {
     const wantedIdx = parseInt(formId.slice("form_".length), 10);
     let synthIdx = 0;
     for (const form of forms) {
@@ -89,9 +104,30 @@ export function findFormByLooseId(
   // page's real form id. If exactly ONE fillable host form exists, use it:
   // single-form pages are the common case and the intent is unambiguous.
   // Multiple fillable forms stay ambiguous → null (the caller warns).
-  if (forms.length === 1) return forms[0];
+  //
+  // Never when the id names an off-limits form: the agent asked for that
+  // form (which it must not touch), not for the page's public one.
+  if (forms.length !== 1) return null;
+  if (
+    (options.singleFormFallback ?? "any") === "positional" &&
+    !POSITIONAL_ID.test(formId)
+  ) {
+    return null;
+  }
+  const namesOffLimitsForm = Array.from(
+    doc.querySelectorAll<HTMLFormElement>("form"),
+  ).some((form) => offLimits(form) && answersTo(form, formId));
+  return namesOffLimitsForm ? null : forms[0];
+}
 
-  return null;
+/** True when `formId` is this form's id, name, data-ll-intent or its slug. */
+function answersTo(form: HTMLFormElement, formId: string): boolean {
+  const intent = form.getAttribute("data-ll-intent");
+  return (
+    form.getAttribute("id") === formId ||
+    form.getAttribute("name") === formId ||
+    (intent !== null && (intent === formId || intentToSlug(intent) === formId))
+  );
 }
 
 /** Mirror of extractPageContext.intentToSlug — keep in sync. */
