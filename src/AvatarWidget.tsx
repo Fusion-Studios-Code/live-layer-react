@@ -92,8 +92,15 @@ export interface ControlledSession {
    * REQUIRED for the typed-message input and any imperative `sendData`
    * calls to actually reach the agent in controlled mode — the widget
    * has no other way to publish since the consumer owns the Room.
-   * The host should wire this to its `room.localParticipant.publishData`.
+   * The host should wire this to its `room.localParticipant.publishData`,
+   * reliable and without a topic.
    * No-op when omitted (typed messages silently drop).
+   *
+   * The widget's answers to the agent's requests (page_context, routes,
+   * form_submitted / form_submit_blocked / form_submit_uncertain,
+   * refusals included) go out here too, already held to one data packet. Without
+   * publishData they go out on the Room from `getRoom()`; with neither,
+   * the agent gets no answer and waits out its timeout.
    */
   publishData?: (data: Record<string, unknown>) => void | Promise<void>;
 
@@ -102,6 +109,9 @@ export interface ControlledSession {
    * Lets the widget's camera + screen-share hooks attach to your Room
    * so the toolbar buttons actually publish tracks. Without this hook
    * the camera and screen-share toggles are no-ops in controlled mode.
+   * When `publishData` is not supplied, the widget's answers to agent
+   * requests are published on this Room's localParticipant (reliable, no
+   * topic).
    *
    * Microphone is intentionally NOT wired through this — controlled
    * consumers usually manage mic publishing themselves, so the widget
@@ -162,14 +172,28 @@ import {
   normalizeRouteInput,
 } from "./utils/extractRoutes";
 import {
+  encodeJson,
   encodePageContextReply,
   encodeRoutesReply,
   publishJsonReliable,
-  publishReliable,
 } from "./utils/dataPayload";
+import {
+  isThenable,
+  pageReadRefusal,
+  requestIdOf,
+  resolveReplySender,
+  submitRefusal,
+  withRequestId,
+  type PageReadReply,
+  type ReplyError,
+  type ReplySender,
+  type SubmitRefusalReason,
+} from "./utils/agentReply";
 import { findFillableFieldInForm } from "./utils/findFieldInForm";
 import { fillField } from "./utils/fillField";
 import { findFormByLooseId } from "./utils/findFormByLooseId";
+import { PRIVATE_SUBTREE } from "./utils/fieldPrivacy";
+import { collectInvalidFields } from "./utils/invalidFields";
 import { detectFlow, resolveFlowControl } from "./utils/detectFlow";
 import {
   pickScrollContainer,
@@ -855,7 +879,11 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
   const pageContextExtrasRef = useRef(pageContextExtras);
   const getRoutesRef = useRef(getRoutesProp);
   const capabilitiesRef = useRef(capabilities);
-  const roomGetterRef = useRef<(() => unknown) | null>(null);
+  // Where the widget's answers to agent requests go out: the controlled
+  // session's publishData / getRoom() in controlled mode, the internal
+  // session's Room otherwise (see utils/agentReply). Bound after the
+  // session hook below; resolved when a reply is sent.
+  const replySenderRef = useRef<() => ReplySender | null>(() => null);
   onNavigateRef.current = onNavigate;
   onScrollToSelectorRef.current = onScrollToSelector;
   onScrollPageRef.current = onScrollPage;
@@ -883,6 +911,50 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     );
   }
 
+  // ── Replies to the agent ─────────────────────────────────────
+  // Every request the agent waits on (request_page_context,
+  // request_routes, submit_form) gets exactly one terminal answer, sent
+  // with its requestId on the controlled session when there is one.
+  function sendReplyBytes(data: Uint8Array, label: string): void {
+    const sender = replySenderRef.current();
+    if (!sender) {
+      console.warn(
+        `[LiveLayer] ${label}: no connection to answer the agent on. ` +
+          (controlledSessionRef.current
+            ? "In controlled mode, pass controlledSession.publishData or a getRoom() that returns the connected Room."
+            : "The session is not connected."),
+      );
+      return;
+    }
+    void sender.send(data, label);
+  }
+  function sendReply(message: Record<string, unknown>, label: string): void {
+    const data = encodeJson(message);
+    if (!data) {
+      console.warn(`[LiveLayer] ${label}: reply could not be serialized. Not sent.`);
+      return;
+    }
+    sendReplyBytes(data, label);
+  }
+  // Answer a request the widget will not or cannot serve, with its normal
+  // reply type plus error / capability / message (see utils/agentReply:
+  // the script-tag widget's protocol).
+  function refuseRead(cmd: AgentCommand, type: PageReadReply, error: ReplyError): void {
+    sendReply(pageReadRefusal(type, cmd, error), cmd.type);
+  }
+  function refuseSubmit(cmd: AgentCommand, reason: SubmitRefusalReason): void {
+    sendReply(submitRefusal(cmd, reason), "submit_form");
+  }
+  // A blocked capability: warn, and answer the requests the agent waits
+  // on. Fire-and-forget commands (navigate, fill_form, ...) have no reply
+  // type and nothing waits for them, so they get none.
+  function refuseBlocked(cmd: AgentCommand, cap: import("./types").AgentCapability): void {
+    blockedWarn(cmd.type, cap);
+    if (cmd.type === "submit_form") refuseSubmit(cmd, "capability_blocked");
+    else if (cmd.type === "request_page_context") refuseRead(cmd, "page_context", "capability_blocked");
+    else if (cmd.type === "request_routes") refuseRead(cmd, "routes", "capability_blocked");
+  }
+
   // ── Data-channel routing ─────────────────────────────────────
   const handleDataMessage = useCallback(
     (msg: Record<string, unknown>) => {
@@ -898,7 +970,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
       // onAgentEvent (which fired above).
       if (cmd.type === "navigate") {
         if (!isAllowed("navigate")) {
-          blockedWarn("navigate", "navigate");
+          refuseBlocked(cmd, "navigate");
           return;
         }
         const href = typeof cmd.href === "string" ? cmd.href : null;
@@ -956,7 +1028,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
 
       if (cmd.type === "scroll_to") {
         if (!isAllowed("scroll")) {
-          blockedWarn("scroll_to", "scroll");
+          refuseBlocked(cmd, "scroll");
           return;
         }
         const selector =
@@ -1003,41 +1075,39 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
 
       if (cmd.type === "request_page_context") {
         if (!isAllowed("read_page")) {
-          blockedWarn("request_page_context", "read_page");
+          refuseBlocked(cmd, "read_page");
           return;
         }
         // Echo the requestId on every response so the agent's
         // publishAndAwait correlates concurrent calls correctly.
-        const requestId =
-          typeof cmd.requestId === "string" ? cmd.requestId : undefined;
-        const sender = roomGetterRef.current?.();
-        const publish = (payload: Record<string, unknown>) => {
+        const requestId = requestIdOf(cmd);
+        const label = "request_page_context";
+        // Exactly one page_context per request, whichever path produces
+        // it. An async getter is announced with page_context_pending first
+        // (the worker reads that as "this page serves reads" while it
+        // waits), then answered with its result or, if it rejects, the
+        // default walker's.
+        let answered = false;
+        const sendContext = (context: unknown) => {
+          if (answered) return;
+          answered = true;
           // Track the latest observed flow step for page-vision step-change
-          // captures. Every page_context payload (custom getter sync/async,
-          // its fallback, and the default walker) routes through here, so
-          // this single read covers all the fresh-context sites.
-          if (payload.type === "page_context") {
-            const step = (
-              payload.context as { flow?: { currentStep?: number } } | undefined
-            )?.flow?.currentStep;
-            setFlowStep(typeof step === "number" ? step : undefined);
-          }
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const room = sender as any;
-          const localParticipant = room?.localParticipant;
-          if (!localParticipant?.publishData) return;
-          const out = requestId ? { ...payload, requestId } : payload;
-          if (payload.type !== "page_context") {
-            void publishJsonReliable(localParticipant, out, "request_page_context");
-            return;
-          }
+          // captures. Every page_context (custom getter sync/async, its
+          // fallback, and the default walker) goes through here.
+          const step = (
+            context as { flow?: { currentStep?: number } } | null | undefined
+          )?.flow?.currentStep;
+          setFlowStep(typeof step === "number" ? step : undefined);
           // Host extras and big forms can push a reply past LiveKit's
           // 64,000-byte packet limit; trim it rather than lose it.
-          const encoded = encodePageContextReply(out);
+          const encoded = encodePageContextReply(
+            withRequestId({ type: "page_context", context }, requestId),
+          );
           if (!encoded) {
             console.warn(
-              "[LiveLayer] request_page_context: reply does not fit one data packet even after trimming. Not sent.",
+              "[LiveLayer] request_page_context: reply does not fit one data packet even after trimming. Answering with a reply_too_large refusal instead.",
             );
+            refuseRead(cmd, "page_context", "reply_too_large");
             return;
           }
           if (encoded.truncated.length > 0) {
@@ -1045,54 +1115,57 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
               `[LiveLayer] request_page_context: reply trimmed to fit the data-channel limit (cut: ${encoded.truncated.join(", ")}).`,
             );
           }
-          void publishReliable(localParticipant, encoded.data, "request_page_context");
+          sendReplyBytes(encoded.data, label);
         };
 
         const extras = pageContextExtrasRef.current;
-        const custom = getPageContextRef.current;
-        try {
-          if (custom) {
-            const maybe = custom(extras);
-            if (maybe instanceof Promise) {
-              publish({ type: "page_context_pending" });
-              maybe
-                .then((ctx) => publish({ type: "page_context", context: ctx }))
-                .catch((err) => {
-                  console.warn(
-                    "[LiveLayer] getPageContext rejected; falling back to default walker.",
-                    err,
-                  );
-                  publish({
-                    type: "page_context",
-                    context: getCachedPageContext(extras),
-                  });
-                });
-              return;
-            }
-            publish({ type: "page_context", context: maybe });
-            return;
+        // The default walker, or an empty context when even that throws.
+        const walk = () => {
+          try {
+            return getCachedPageContext(extras);
+          } catch (err) {
+            console.warn(
+              "[LiveLayer] page-context extraction threw. Sending empty context.",
+              err,
+            );
+            return { url: "", title: "", pathname: "/", regions: [], visibleText: "", visibleLinks: [], visibleFields: [], forms: [], extras };
           }
-          publish({
-            type: "page_context",
-            context: getCachedPageContext(extras),
-          });
+        };
+        const custom = getPageContextRef.current;
+        if (!custom) {
+          sendContext(walk());
+          return;
+        }
+        let result: unknown;
+        try {
+          result = custom(extras);
         } catch (err) {
           console.warn(
-            "[LiveLayer] page-context extraction threw. Sending empty context.",
+            "[LiveLayer] getPageContext threw; falling back to default walker.",
             err,
           );
-          publish({
-            type: "page_context",
-            context: { url: "", title: "", pathname: "/", regions: [], visibleText: "", visibleLinks: [], visibleFields: [], forms: [], extras },
-          });
+          sendContext(walk());
+          return;
         }
+        if (!isThenable(result)) {
+          sendContext(result);
+          return;
+        }
+        sendReply(withRequestId({ type: "page_context_pending" }, requestId), label);
+        Promise.resolve(result).then(sendContext, (err: unknown) => {
+          console.warn(
+            "[LiveLayer] getPageContext rejected; falling back to default walker.",
+            err,
+          );
+          sendContext(walk());
+        });
         return;
       }
 
       // ── 0.4.0 — interaction commands ─────────────────────────
       if (cmd.type === "scroll_page") {
         if (!isAllowed("scroll")) {
-          blockedWarn("scroll_page", "scroll");
+          refuseBlocked(cmd, "scroll");
           return;
         }
         const direction = cmd.direction;
@@ -1157,7 +1230,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
 
       if (cmd.type === "click") {
         if (!isAllowed("click")) {
-          blockedWarn("click", "click");
+          refuseBlocked(cmd, "click");
           return;
         }
         const selector =
@@ -1191,8 +1264,9 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           );
           return;
         }
-        // Privacy: never click into private subtrees.
-        if (el.closest('[data-ll-private="true"], .ll-widget')) {
+        // Privacy: never click into private subtrees (data-ll-private with
+        // any value, data-ll-skip, the widget's own DOM).
+        if (el.closest(PRIVATE_SUBTREE)) {
           console.warn(
             `[LiveLayer] click: refusing to click element inside a private subtree.`,
           );
@@ -1212,7 +1286,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
         // button, triggered by id through the flow registry (no selector
         // crosses the wire). See detectFlow / FlowContext.
         if (!isAllowed("click")) {
-          blockedWarn(cmd.type, "click");
+          refuseBlocked(cmd, "click");
           return;
         }
         if (typeof document === "undefined") return;
@@ -1239,15 +1313,10 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
 
       if (cmd.type === "fill_form" || cmd.type === "focus_field") {
         if (!isAllowed("fill_forms")) {
-          blockedWarn(cmd.type, "fill_forms");
+          refuseBlocked(cmd, "fill_forms");
           return;
         }
         if (typeof document === "undefined") return;
-        // Confirmation chime on fill (focus_field is just keyboard
-        // movement, no chime — would feel noisy).
-        if (cmd.type === "fill_form") {
-          soundsRef.current.playConfirmation();
-        }
         const formId = typeof cmd.formId === "string" ? cmd.formId : null;
         if (!formId) {
           console.warn(`[LiveLayer] ${cmd.type}: missing formId.`);
@@ -1261,11 +1330,17 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           );
           return;
         }
-        if (form.closest('[data-ll-private="true"], [data-ll-skip], .ll-widget')) {
+        if (form.closest(PRIVATE_SUBTREE)) {
           console.warn(
             `[LiveLayer] ${cmd.type}: refusing to touch a form in a private / opted-out subtree.`,
           );
           return;
+        }
+        // Confirmation chime on fill, once the form is one the widget will
+        // touch (focus_field is just keyboard movement, no chime — would
+        // feel noisy).
+        if (cmd.type === "fill_form") {
+          soundsRef.current.playConfirmation();
         }
 
         if (cmd.type === "focus_field") {
@@ -1335,75 +1410,59 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
       }
 
       if (cmd.type === "submit_form") {
+        // Every way out of this branch answers the agent: a refusal is a
+        // form_submit_blocked with a refusal reason, so the worker knows at
+        // once that nothing was submitted.
         if (!isAllowed("submit_forms")) {
-          blockedWarn("submit_form", "submit_forms");
+          refuseBlocked(cmd, "submit_forms");
           return;
         }
         if (typeof document === "undefined") return;
         const formId = typeof cmd.formId === "string" ? cmd.formId : null;
         if (!formId) {
           console.warn(`[LiveLayer] submit_form: missing formId.`);
+          refuseSubmit(cmd, "missing_form_id");
           return;
         }
-        // Confirmation chime — fired BEFORE submit; if validation
-        // blocks, the chime still feels right because the agent did
-        // the right thing, browser is just enforcing constraints.
-        soundsRef.current.playConfirmation();
-        const form = findFormByLooseId(document, formId);
+        // Strict lookup: only a positional form_<n> id may fall back to the
+        // page's only form. An unknown id, or one naming a private /
+        // data-ll-skip form (which the lookup never resolves), is refused
+        // as form_not_found instead of submitting some other form.
+        const form = findFormByLooseId(document, formId, {
+          singleFormFallback: "positional",
+        });
         if (!form) {
           console.warn(
             `[LiveLayer] submit_form: no <form> matched id="${formId}" (or matching name / data-ll-intent slug).`,
           );
+          refuseSubmit(cmd, "form_not_found");
           return;
         }
-        if (form.closest('[data-ll-private="true"], [data-ll-skip], .ll-widget')) {
+        if (form.closest(PRIVATE_SUBTREE)) {
           console.warn(
             `[LiveLayer] submit_form: refusing to submit a form in a private / opted-out subtree.`,
           );
+          refuseSubmit(cmd, "form_private");
           return;
         }
+        // Confirmation chime — after the lookup and the private guard, so a
+        // refused submit (nothing sent) is silent, and BEFORE submit: if
+        // validation blocks, the chime still feels right because the agent
+        // did the right thing, browser is just enforcing constraints.
+        soundsRef.current.playConfirmation();
         // Listen for the submit event so we can publish form_submitted /
         // form_submit_blocked back to the agent. requestSubmit fires the
         // submit event AND runs HTML5 validation; if validation fails,
         // submit never fires and we time out → form_submit_blocked.
-        const requestId =
-          typeof cmd.requestId === "string" ? cmd.requestId : undefined;
-        const sender = roomGetterRef.current?.();
+        const requestId = requestIdOf(cmd);
         const publishResp = (payload: Record<string, unknown>) => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const room = sender as any;
-          const lp = room?.localParticipant;
-          if (!lp?.publishData) return;
-          const out = requestId ? { ...payload, requestId } : payload;
-          void publishJsonReliable(lp, out, "submit_form");
+          sendReply(withRequestId(payload, requestId), "submit_form");
         };
         // Collect the names of fields failing native HTML5 validation so
         // the agent can name the offending field(s) instead of guessing.
-        const fieldLabel = (el: Element): string => {
-          const e = el as HTMLInputElement;
-          const al = e.getAttribute?.("aria-label");
-          if (al) return al;
-          const id = e.id;
-          if (id) {
-            const lab = form.ownerDocument?.querySelector(`label[for="${id}"]`);
-            if (lab?.textContent?.trim()) return lab.textContent.trim();
-          }
-          return e.getAttribute?.("name") || e.id || e.type || "field";
-        };
-        const collectInvalid = (): string[] => {
-          try {
-            return Array.from(form.elements as ArrayLike<Element>)
-              .filter(
-                (el) =>
-                  "willValidate" in el &&
-                  (el as HTMLInputElement).willValidate &&
-                  !(el as HTMLInputElement).checkValidity(),
-              )
-              .map((el) => `${fieldLabel(el)}: ${(el as HTMLInputElement).validationMessage}`);
-          } catch {
-            return [];
-          }
-        };
+        // A field the agent may not see is never named (its message can
+        // quote what the visitor typed); see utils/invalidFields.
+        const collectInvalid = (): string[] => collectInvalidFields(form);
         // HTML5 pre-check: if native constraints are unmet, surface them by
         // name and do NOT submit. (For JS-only validated forms this passes
         // and the defaultPrevented check below is what catches them.)
@@ -1541,26 +1600,22 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
 
       if (cmd.type === "request_routes") {
         if (!isAllowed("read_page")) {
-          blockedWarn("request_routes", "read_page");
+          refuseBlocked(cmd, "read_page");
           return;
         }
-        const requestId =
-          typeof cmd.requestId === "string" ? cmd.requestId : undefined;
-        const sender = roomGetterRef.current?.();
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const room = sender as any;
-        const lp = room?.localParticipant;
-        if (!lp?.publishData) return;
-
+        const requestId = requestIdOf(cmd);
+        const label = "request_routes";
+        // Exactly one answer per request, whichever path produces it.
+        let answered = false;
         const publish = (routes: import("./utils/extractRoutes").ExtractedRoute[]) => {
-          const base = requestId
-            ? { type: "routes", requestId }
-            : { type: "routes" };
+          if (answered) return;
+          answered = true;
           // A host getRoutes list (up to 200 entries with descriptions)
           // can pass the 64,000-byte packet limit; send the routes that fit.
-          const encoded = encodeRoutesReply(base, routes);
+          const encoded = encodeRoutesReply(withRequestId({ type: "routes" }, requestId), routes);
           if (!encoded) {
-            console.warn("[LiveLayer] request_routes: reply does not fit one data packet. Not sent.");
+            console.warn("[LiveLayer] request_routes: reply does not fit one data packet. Answering with a reply_too_large refusal instead.");
+            refuseRead(cmd, "routes", "reply_too_large");
             return;
           }
           if (encoded.dropped > 0) {
@@ -1568,7 +1623,22 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
               `[LiveLayer] request_routes: sent ${routes.length - encoded.dropped} of ${routes.length} routes to fit the data-channel limit.`,
             );
           }
-          void publishReliable(lp, encoded.data, "request_routes");
+          sendReplyBytes(encoded.data, label);
+        };
+        // Default: walk the current page's <a href> elements.
+        const publishWalkedRoutes = () => {
+          let routes: import("./utils/extractRoutes").ExtractedRoute[];
+          try {
+            routes = getCachedRoutes();
+          } catch (err) {
+            console.warn("[LiveLayer] request_routes: extractRoutes threw.", err);
+            if (!answered) {
+              answered = true;
+              refuseRead(cmd, "routes", "extraction_failed");
+            }
+            return;
+          }
+          publish(routes);
         };
 
         // Consumer-supplied route source wins. This is the right answer
@@ -1576,42 +1646,47 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
         // only have the prev/next nav links, but the consumer can fetch
         // the canonical list (e.g. /api/projects) and return it here.
         const custom = getRoutesRef.current;
-        if (custom) {
-          try {
-            const result = custom();
-            const handle = (input: unknown) => {
-              if (!Array.isArray(input)) {
-                publish([]);
-                return;
-              }
-              publish(input.map(normalizeRouteInput).slice(0, 200));
-            };
-            if (result instanceof Promise) {
-              result.then(handle).catch((err) => {
-                console.warn(
-                  "[LiveLayer] getRoutes rejected; falling back to DOM walker.",
-                  err,
-                );
-                publish(getCachedRoutes());
-              });
-            } else {
-              handle(result);
-            }
-          } catch (err) {
-            console.warn(
-              "[LiveLayer] getRoutes threw; falling back to DOM walker.",
-              err,
-            );
-            publish(getCachedRoutes());
-          }
+        if (!custom) {
+          publishWalkedRoutes();
           return;
         }
-
-        // Default: walk the current page's <a href> elements.
+        const handle = (input: unknown) => {
+          let routes: import("./utils/extractRoutes").ExtractedRoute[];
+          try {
+            routes = Array.isArray(input)
+              ? input.map(normalizeRouteInput).slice(0, 200)
+              : [];
+          } catch (err) {
+            console.warn(
+              "[LiveLayer] getRoutes returned entries that could not be read; falling back to DOM walker.",
+              err,
+            );
+            publishWalkedRoutes();
+            return;
+          }
+          publish(routes);
+        };
+        let result: unknown;
         try {
-          publish(getCachedRoutes());
+          result = custom();
         } catch (err) {
-          console.warn("[LiveLayer] request_routes: extractRoutes threw.", err);
+          console.warn(
+            "[LiveLayer] getRoutes threw; falling back to DOM walker.",
+            err,
+          );
+          publishWalkedRoutes();
+          return;
+        }
+        if (isThenable(result)) {
+          Promise.resolve(result).then(handle, (err: unknown) => {
+            console.warn(
+              "[LiveLayer] getRoutes rejected; falling back to DOM walker.",
+              err,
+            );
+            publishWalkedRoutes();
+          });
+        } else {
+          handle(result);
         }
         return;
       }
@@ -1630,7 +1705,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
       // need to wire the input bridge themselves.
       if (cmd.type === "task_field_updated") {
         if (!isAllowed("collect_data")) {
-          blockedWarn("task_field_updated", "collect_data");
+          refuseBlocked(cmd, "collect_data");
           return;
         }
         const detail = {
@@ -1669,7 +1744,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
 
       if (cmd.type === "task_completed") {
         if (!isAllowed("collect_data")) {
-          blockedWarn("task_completed", "collect_data");
+          refuseBlocked(cmd, "collect_data");
           return;
         }
         const raw = (cmd as Record<string, unknown>).result;
@@ -1731,9 +1806,12 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     return controlledSession.subscribeToDataMessages(handleDataMessage);
   }, [controlledSession, handleDataMessage]);
 
-  // Bind the room-getter ref so the data-channel handler can publish
-  // page-context responses without listing `session` in its deps.
-  roomGetterRef.current = () => internalSession.getRoom?.();
+  // Bind the reply route so the data-channel handler can answer the agent
+  // without listing `session` in its deps. In controlled mode the internal
+  // session never connects (its getRoom() is null), so replies go through
+  // the host's controlledSession instead.
+  replySenderRef.current = () =>
+    resolveReplySender(controlledSession, () => internalSession.getRoom?.());
 
   // Dev-only: expose a window helper so `docs/testing/widget-command-smoke.md`
   // can dispatch synthetic agent commands without going through LiveKit.

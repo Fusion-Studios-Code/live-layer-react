@@ -103,7 +103,7 @@ function Progress() {
 <form data-ll-intent="request a demo">  // disambiguate (still visible)
 ```
 
-`type="password"`, `autocomplete="cc-*"`, and `autocomplete="off"` are ALWAYS excluded — you don't have to mark them.
+`type="password"`, `autocomplete="cc-*"`, and `autocomplete="off"` are ALWAYS excluded — you don't have to mark them. (One exception, in the form manifest: see [Privacy](#privacy).)
 
 See [docs.livelayer.studio/develop/data-collection](https://docs.livelayer.studio/develop/data-collection) for the full result shape, dashboard-declared field lists, slide-level data collection, capability gating, and webhook delivery.
 
@@ -244,11 +244,11 @@ The agent emits `{ type: "click", selector: "[data-ll-action='open-pricing-modal
 The agent sees these in `PageContext.forms` and calls:
 - `fill_form` — sets values via the canonical native-setter pattern (your `onChange` listeners fire correctly). Use when the agent already has all the answers.
 - `collect_from_page` — runs a guided sub-conversation that asks for each field one at a time, normalizes spoken input per kind (email letter-by-letter, phone digit grouping, etc), and delivers a typed `onCollect` payload. Use when the visitor wants to fill the form by voice. See [Structured data collection](#structured-data-collection-0120) above.
-- `submit_form` — calls `form.requestSubmit()`. Publishes `{ type: "form_submitted", formId }` on success or `{ type: "form_submit_blocked", formId, reason: "validation" }` on HTML5 validation failure.
+- `submit_form` — calls `form.requestSubmit()`. Publishes `{ type: "form_submitted", formId }` on success or `{ type: "form_submit_blocked", formId, reason: "validation", invalidFields }` on HTML5 validation failure, where each `invalidFields` entry is `"<label>: <validationMessage>"`. A field the agent may not see (see Privacy) is never named there: if any fail, they appear as one generic entry, `"a private field you can't see or fill: ask the visitor to check it"`, because the browser's message can quote what the visitor typed. A submit the widget does not carry out is answered too, as `form_submit_blocked` with `reason` set to `capability_blocked`, `missing_form_id` or `form_not_found`, so the agent knows at once that nothing was sent (`invalidFields` is `[]`, except that a `capability_blocked` refusal carries its message there; see section 5). A form in a private / `data-ll-skip` subtree is never resolved, so a submit naming one is answered `form_not_found`. On a page with a single form, only a positional `form_<n>` id falls back to that form; any other id that matches nothing is refused rather than submitting it.
 
 Form IDs are inferred from the form's existing `id` / `name` attribute, falling back to a `data-ll-intent` slug, finally `form_<index>`.
 
-**Opt-out for privacy**: `<form data-ll-skip>...</form>` and `<input data-ll-private />` keep things out of the agent's view. `type="password"`, `autocomplete="cc-*"`, and `autocomplete="off"` are ALWAYS excluded — card fields belong in Stripe Elements; we will not be the rail.
+**Opt-out for privacy**: `<form data-ll-skip>...</form>` and `<input data-ll-private />` keep things out of the agent's view and reach (it cannot fill, submit or click inside them). `type="password"`, `autocomplete="cc-*"`, and `autocomplete="off"` are ALWAYS excluded — card fields belong in Stripe Elements; we will not be the rail.
 
 **Routes**: the agent can call `request_routes` to get up to 200 deduped `<a href>` entries from the page (internal flagged separately from external). Useful for "where can I go?" prompts.
 
@@ -275,9 +275,18 @@ Compliance / safety knob: pass an allowlist.
 
 Default (`capabilities` undefined) = all enabled. **Recommended starter**: omit `submit_forms` for the first few weeks of production. Filling is reversible, submitting isn't.
 
+A blocked request the agent waits on is answered rather than left to time out, with its usual reply type plus `error: "capability_blocked"`, `capability` and `message` (a sentence for the agent). This is the same shape the script-tag widget (`@livelayer/sdk` 0.10) sends:
+
+- `read_page` blocked: `page_context` carries the refusal in `context` too, and `routes` is `[]`.
+- `submit_forms` blocked: `form_submit_blocked` with `reason: "capability_blocked"` and the message as its one `invalidFields` entry. Nothing is submitted.
+
+A page read the widget cannot serve for another reason gets the same shape without `capability`: `error: "reply_too_large"` (not even a trimmed reply fits one data packet) or, for routes, `"extraction_failed"`. Blocked fire-and-forget commands (`navigate`, `fill_form`, ...) have no reply and nothing waits for them, so they are not answered.
+
 ### 6. Persist the session across pages (multi-page apps)
 
 For SPAs (Next.js, Remix, React Router), mount the widget at the app root and the session survives route changes automatically. For multi-page apps where the entire React tree unmounts, use `controlledSession` to own the LiveKit Room yourself and keep it alive across reloads. See [the `ControlledSession` interface](src/AvatarWidget.tsx) for the contract.
+
+In controlled mode the widget answers the agent's requests (`page_context`, `routes`, the `submit_form` outcome, refusals included) through your session: `controlledSession.publishData` when you pass it, otherwise the Room returned by `controlledSession.getRoom()` (published reliable, no topic). Pass at least one of them, or those requests time out on the agent's side.
 
 ### 7. Custom branding
 
@@ -381,13 +390,17 @@ The default page-context walker **never** extracts:
 - Form values (only labels and field types)
 - Inputs with `type="password"`
 - Inputs with `autocomplete="cc-*"` or `autocomplete="off"`
-- Elements (and their subtrees) with `data-ll-private="true"`
+- Elements (and their subtrees) with `data-ll-private` (with or without a value) or `data-ll-skip`
 - The widget itself (`.ll-widget`)
+
+The same rule covers the page text, links, regions, routes, form intent, the multi-step `flow` labels and forms, and the agent's `click`, `fill_form`, `focus_field` and `submit_form`. A private element nested inside an ordinary paragraph, heading, link, label or region is cut out of that element's text. A private field that fails validation still blocks `submit_form`, but it is reported as one generic `invalidFields` entry, without its label or the browser's message.
+
+**The form manifest.** When the widget owns the session (no `controlledSession`), `@livelayer/sdk` also publishes a form manifest into the LiveKit room on connect, as the visitor's `agent.context` participant attribute (the agent can read it), and republishes it as the visitor types. Unlike the page context it carries each field's **value**, next to its label and kind. It skips the same subtrees (`data-ll-private` with or without a value, `data-ll-skip`, `.ll-widget`; from `@livelayer/sdk` 0.10, which this package requires) and `type="password"`, `type="hidden"` and `autocomplete="cc-*"` inputs, and it leaves private text out of field labels. One exception: it still reports `autocomplete="off"` fields, values included. Put `data-ll-private` on such a field to keep it out.
 
 To redact additional content:
 
 ```tsx
-<div data-ll-private="true">
+<div data-ll-private>
   <UserBankAccount />
 </div>
 ```
@@ -430,6 +443,8 @@ The thin web-component wrapper from 0.1.x is still exported for backwards compat
 import { LiveLayerWidget } from "@livelayer/react";
 <LiveLayerWidget agentId="..." />
 ```
+
+It renders `@livelayer/sdk`'s `<livelayer-widget>`, so it behaves like the script tag. From 0.26.1 that is `@livelayer/sdk` 0.10, which also answers the agent's page tools: it sends the page context and routes, and carries out `fill_form`, `focus_field` and `submit_form` on your page, under the privacy rules above. One difference from `<AvatarWidget>`: on a page with a single form, its `submit_form` still treats an id that matches nothing as that form. This wrapper has no `capabilities` prop, so every capability is allowed. Use `<AvatarWidget capabilities={...}>` to restrict them.
 
 ---
 

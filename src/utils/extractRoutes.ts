@@ -5,11 +5,13 @@
 // change less). Bust on pushState.
 //
 // Skip rules:
-//   - data-ll-private subtrees
-//   - .ll-widget (the widget itself)
+//   - [data-ll-private] (any value) / [data-ll-skip] / .ll-widget (the
+//     widget itself) subtrees, and the same subtrees nested inside a
+//     link's text (agentText cuts them out; a link whose whole text is
+//     private is listed without text)
 //   - href that's empty / "#" / "javascript:" / "mailto:" / "tel:"
 
-import { hasPrivateAncestor } from "./fieldPrivacy";
+import { agentText, hasPrivateAncestor } from "./fieldPrivacy";
 
 const MAX_ROUTES = 200;
 
@@ -108,7 +110,7 @@ export function extractRoutes(doc?: Document): ExtractedRoute[] {
 
     if (seen.has(href)) continue;
     seen.add(href);
-    const text = (a.textContent || "").trim().slice(0, 120);
+    const text = agentText(a).trim().slice(0, 120);
     out.push({ href, text, internal });
   }
 
