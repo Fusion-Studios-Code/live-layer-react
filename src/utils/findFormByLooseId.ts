@@ -17,6 +17,8 @@
 //
 // Returns null when nothing matches. Callers warn + bail.
 
+import { PRIVATE_SUBTREE } from "./fieldPrivacy";
+
 export interface FindFormOptions {
   /**
    * Which unmatched ids may fall back to the page's only fillable form.
@@ -41,15 +43,17 @@ export function findFormByLooseId(
 
   // Never resolve a form the agent must not touch: its own widget DOM
   // (.ll-widget — e.g. the message composer) or a host opt-out subtree
-  // (data-ll-private / data-ll-skip). Mirrors AvatarWidget's
-  // fill_form/submit_form guard and the extractPageContext discovery
-  // exclusion. Without this, a loose id — especially the positional
-  // `form_<n>` fallback, which skips forms that carry a real id — can land
-  // on the widget's own unnamed form and trip "refusing to touch a private
-  // / opted-out subtree".
+  // (data-ll-private with any value / data-ll-skip): PRIVATE_SUBTREE, the
+  // same rule as AvatarWidget's fill_form/submit_form guard and the
+  // extractPageContext discovery exclusion, so positional `form_<n>` ids
+  // count the same forms on both sides. Without this, a loose id —
+  // especially the positional `form_<n>` fallback, which skips forms that
+  // carry a real id — can land on the widget's own unnamed form and trip
+  // "refusing to touch a private / opted-out subtree". (Before 0.26.1 this
+  // checked only data-ll-private="true", so a form inside a bare
+  // data-ll-private could be filled and submitted by id.)
   const offLimits = (form: HTMLFormElement): boolean =>
-    form.closest('[data-ll-private="true"], [data-ll-skip], .ll-widget') !==
-    null;
+    form.closest(PRIVATE_SUBTREE) !== null;
 
   // 1. Direct id match.
   try {

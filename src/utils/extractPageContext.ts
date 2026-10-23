@@ -6,9 +6,11 @@
 //   - Inputs with type="password" are excluded entirely.
 //   - Inputs with autocomplete="cc-number" / "cc-csc" / "cc-exp*" / "off"
 //     are excluded.
-//   - Elements with [data-ll-private="true"] (and their subtree) are
-//     skipped.
-//   - The widget itself (.ll-widget) is skipped.
+//   - [data-ll-private] (any value), [data-ll-skip] and .ll-widget (the
+//     widget itself) subtrees are skipped, for text, links and regions
+//     as well as for fields, including when they are nested inside an
+//     ordinary paragraph, heading, link, label, region or form-intent
+//     source (all text is read through fieldPrivacy's agentText).
 //
 // Output cap: 4 KB total. Priority drop order: regions > headings >
 // paragraphs > links > fields. The cap is enforced by progressively
@@ -20,7 +22,12 @@
 // IntersectionObserver lives at module scope so it's also reused.
 
 import type { PageContext } from "../types";
-import { isFieldFillable, hasPrivateAncestor } from "./fieldPrivacy";
+import {
+  agentText,
+  isFieldFillable,
+  hasPrivateAncestor,
+  PRIVATE_SUBTREE,
+} from "./fieldPrivacy";
 import { detectFlow } from "./detectFlow";
 
 const MAX_OUTPUT_BYTES = 4096;
@@ -32,26 +39,16 @@ const MAX_FIELDS_PER_FORM = 30;
 const MAX_OPTIONS_PER_FIELD = 20;
 const MAX_PARAGRAPH_CHARS = 500;
 
-const VISUAL_PRIVATE_SELECTORS = [
-  "[data-ll-private=\"true\"]",
-  ".ll-widget",
-  "script",
-  "style",
-  "noscript",
-  "iframe",
-];
+// Subtrees that never contribute text, links or regions: the private
+// subtrees (any data-ll-private value — before 0.26.1 only "true" was
+// skipped here, so the text of a bare data-ll-private or a data-ll-skip
+// subtree reached the agent), plus non-content elements.
+const NON_TEXT_SUBTREE = `${PRIVATE_SUBTREE}, script, style, noscript, iframe`;
 
 function isPrivate(el: Element): boolean {
   if (el.getAttribute("aria-hidden") === "true") return true;
   if (el.hasAttribute("hidden")) return true;
-  let cur: Element | null = el;
-  while (cur) {
-    for (const sel of VISUAL_PRIVATE_SELECTORS) {
-      if (cur.matches(sel)) return true;
-    }
-    cur = cur.parentElement;
-  }
-  return false;
+  return el.closest(NON_TEXT_SUBTREE) !== null;
 }
 
 function isVisibleInViewport(el: Element): boolean {
@@ -88,7 +85,10 @@ function fieldLabel(el: HTMLElement): string {
         ? CSS.escape(id)
         : id.replace(/"/g, '\\"');
     const lbl = document.querySelector(`label[for="${escapedId}"]`);
-    if (lbl?.textContent) return lbl.textContent.trim();
+    // agentText: "" for a label in a private subtree, and the label's
+    // text without any private element nested in it.
+    const text = lbl ? agentText(lbl).trim() : "";
+    if (text) return text;
   }
   const aria = el.getAttribute("aria-label");
   if (aria) return aria.trim();
@@ -118,7 +118,7 @@ function fieldLabel(el: HTMLElement): string {
         ) {
           continue;
         }
-        const t = (node.textContent || "").trim();
+        const t = agentText(node).trim();
         if (t) parts.push(t);
       }
     }
@@ -161,6 +161,10 @@ function intentToSlug(intent: string | null): string | null {
  *      ancestor chain — picks up "Request a demo" sections
  * Returns null when nothing fits — the LLM is fine without an
  * intent hint, it'll just disambiguate from the field list itself.
+ *
+ * A target, button or heading in a private subtree is passed over, as
+ * if it were not on the page, and private text nested inside one is
+ * cut out (agentText).
  */
 function inferFormIntent(form: HTMLFormElement): string | null {
   const aria = form.getAttribute("aria-label");
@@ -169,17 +173,19 @@ function inferFormIntent(form: HTMLFormElement): string | null {
   const ariaBy = form.getAttribute("aria-labelledby");
   if (ariaBy) {
     const target = document.getElementById(ariaBy);
-    if (target?.textContent) return target.textContent.trim().slice(0, 80);
+    const text = target ? agentText(target).trim() : "";
+    if (text) return text.slice(0, 80);
   }
 
-  const submit = form.querySelector<HTMLButtonElement | HTMLInputElement>(
+  const submit = firstNotPrivate<HTMLButtonElement | HTMLInputElement>(
+    form,
     'button[type="submit"], input[type="submit"], button:not([type])',
   );
   if (submit) {
     const text =
       submit instanceof HTMLInputElement
         ? submit.value
-        : (submit.textContent ?? "").trim();
+        : agentText(submit).trim();
     if (text && text.length < 60 && !/^(submit|ok|continue)$/i.test(text)) {
       return text;
     }
@@ -190,11 +196,22 @@ function inferFormIntent(form: HTMLFormElement): string | null {
   // page-wide titles like "Home".
   let cur: Element | null = form.parentElement;
   for (let depth = 0; cur && depth < 4; depth++, cur = cur.parentElement) {
-    const heading = cur.querySelector("h1, h2, h3, h4");
-    if (heading?.textContent) {
-      const text = heading.textContent.trim();
+    const heading = firstNotPrivate(cur, "h1, h2, h3, h4");
+    if (heading) {
+      const text = agentText(heading).trim();
       if (text && text.length < 80) return text;
     }
+  }
+  return null;
+}
+
+/** First match of `selector` under `root` outside any private subtree. */
+function firstNotPrivate<T extends Element = Element>(
+  root: ParentNode,
+  selector: string,
+): T | null {
+  for (const el of Array.from(root.querySelectorAll<T>(selector))) {
+    if (!hasPrivateAncestor(el)) return el;
   }
   return null;
 }
@@ -245,7 +262,7 @@ export function extractPageContext(
     const id = el.getAttribute("data-ll-region") ?? "";
     const intent = el.getAttribute("data-ll-intent") ?? undefined;
     const text = clampString(
-      (el.innerText || el.textContent || "").trim(),
+      agentText(el, true).trim(),
       MAX_PARAGRAPH_CHARS * 2,
     );
     if (!id || !text) continue;
@@ -261,7 +278,7 @@ export function extractPageContext(
   for (const h of headings) {
     if (isPrivate(h)) continue;
     if (!isVisibleInViewport(h)) continue;
-    const text = (h.textContent || "").trim();
+    const text = agentText(h).trim();
     if (text) textNodes.push(`${h.tagName}: ${clampString(text, 200)}`);
   }
   const paragraphs = Array.from(doc.querySelectorAll<HTMLElement>("p, li"));
@@ -270,7 +287,7 @@ export function extractPageContext(
     if (!isVisibleInViewport(p)) continue;
     // Skip if already covered by a heading
     if (HEADING_TAGS.includes(p.tagName)) continue;
-    const text = (p.textContent || "").trim();
+    const text = agentText(p).trim();
     if (text.length > 10) {
       textNodes.push(clampString(text, MAX_PARAGRAPH_CHARS));
     }
@@ -285,7 +302,7 @@ export function extractPageContext(
     if (isPrivate(a)) continue;
     if (!isVisibleInViewport(a)) continue;
     const href = a.getAttribute("href") || "";
-    const text = (a.textContent || "").trim();
+    const text = agentText(a).trim();
     if (!href || !text) continue;
     visibleLinks.push({ href, text: clampString(text, 100) });
   }
@@ -477,7 +494,8 @@ export function extractPageContext(
         const opts: Array<{ value: string; label: string }> = [];
         for (let i = 0; i < el.options.length; i++) {
           const o = el.options[i];
-          if (!o) continue;
+          // An option marked private is left out, placeholder or not.
+          if (!o || hasPrivateAncestor(o)) continue;
           // A placeholder option (empty value and/or disabled — e.g.
           // "Select a subject…") signals this select is a REQUIRED choice
           // even when the host omits the HTML5 `required` attribute (common

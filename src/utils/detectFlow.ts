@@ -5,7 +5,7 @@
 // control by id without a fragile CSS selector crossing the wire.
 
 import type { FlowContext, FlowControl } from "../types";
-import { hasPrivateAncestor } from "./fieldPrivacy";
+import { agentText, hasPrivateAncestor } from "./fieldPrivacy";
 
 const ADVANCE_RE = /\b(continue|next|proceed|move\s*on|forward)\b|→|›/i;
 const BACK_RE = /\b(back|previous|prev|go\s*back)\b|←|‹/i;
@@ -39,10 +39,12 @@ function isDisabled(el: Element): boolean {
   return false;
 }
 
+// Control and step labels reach the agent (page_context.flow), so they
+// are read through agentText: a private element nested in a button or a
+// step item is cut out of its label.
 function controlText(el: Element): string {
   return (
-    (el as HTMLElement).innerText ||
-    el.textContent ||
+    agentText(el, true) ||
     el.getAttribute("aria-label") ||
     (el as HTMLInputElement).value ||
     ""
@@ -163,11 +165,7 @@ function stepperResult(
   items: Element[],
   activeIdx: number,
 ): { currentStep: number; totalSteps: number; stepLabel?: string } {
-  const label = cleanLabel(
-    (items[activeIdx] as HTMLElement).innerText ||
-      items[activeIdx].textContent ||
-      "",
-  );
+  const label = cleanLabel(agentText(items[activeIdx], true));
   return {
     totalSteps: items.length,
     currentStep: activeIdx + 1,

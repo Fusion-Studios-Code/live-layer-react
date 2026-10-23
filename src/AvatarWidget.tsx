@@ -98,7 +98,7 @@ export interface ControlledSession {
    *
    * The widget's answers to the agent's requests (page_context, routes,
    * form_submitted / form_submit_blocked / form_submit_uncertain,
-   * tool_error) go out here too, already held to one data packet. Without
+   * refusals included) go out here too, already held to one data packet. Without
    * publishData they go out on the Room from `getRoom()`; with neither,
    * the agent gets no answer and waits out its timeout.
    */
@@ -179,18 +179,21 @@ import {
 } from "./utils/dataPayload";
 import {
   isThenable,
+  pageReadRefusal,
   requestIdOf,
   resolveReplySender,
   submitRefusal,
-  toolErrorReply,
   withRequestId,
+  type PageReadReply,
+  type ReplyError,
   type ReplySender,
   type SubmitRefusalReason,
-  type ToolErrorReason,
 } from "./utils/agentReply";
 import { findFillableFieldInForm } from "./utils/findFieldInForm";
 import { fillField } from "./utils/fillField";
 import { findFormByLooseId } from "./utils/findFormByLooseId";
+import { PRIVATE_SUBTREE } from "./utils/fieldPrivacy";
+import { collectInvalidFields } from "./utils/invalidFields";
 import { detectFlow, resolveFlowControl } from "./utils/detectFlow";
 import {
   pickScrollContainer,
@@ -933,24 +936,23 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
     }
     sendReplyBytes(data, label);
   }
-  // Answer a request the widget will not or cannot serve. Commands with no
-  // requestId (fire-and-forget) get no answer, since nothing waits for them.
-  function refuse(
-    cmd: AgentCommand,
-    reason: ToolErrorReason,
-    extra?: Record<string, unknown>,
-  ): void {
-    const reply = toolErrorReply(cmd, reason, extra);
-    if (reply) sendReply(reply, cmd.type);
+  // Answer a request the widget will not or cannot serve, with its normal
+  // reply type plus error / capability / message (see utils/agentReply:
+  // the script-tag widget's protocol).
+  function refuseRead(cmd: AgentCommand, type: PageReadReply, error: ReplyError): void {
+    sendReply(pageReadRefusal(type, cmd, error), cmd.type);
   }
   function refuseSubmit(cmd: AgentCommand, reason: SubmitRefusalReason): void {
     sendReply(submitRefusal(cmd, reason), "submit_form");
   }
-  // A blocked capability: warn, and answer when something waits for it.
+  // A blocked capability: warn, and answer the requests the agent waits
+  // on. Fire-and-forget commands (navigate, fill_form, ...) have no reply
+  // type and nothing waits for them, so they get none.
   function refuseBlocked(cmd: AgentCommand, cap: import("./types").AgentCapability): void {
     blockedWarn(cmd.type, cap);
     if (cmd.type === "submit_form") refuseSubmit(cmd, "capability_blocked");
-    else refuse(cmd, "capability_blocked", { capability: cap });
+    else if (cmd.type === "request_page_context") refuseRead(cmd, "page_context", "capability_blocked");
+    else if (cmd.type === "request_routes") refuseRead(cmd, "routes", "capability_blocked");
   }
 
   // ── Data-channel routing ─────────────────────────────────────
@@ -1103,9 +1105,9 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           );
           if (!encoded) {
             console.warn(
-              "[LiveLayer] request_page_context: reply does not fit one data packet even after trimming. Not sent.",
+              "[LiveLayer] request_page_context: reply does not fit one data packet even after trimming. Answering with a reply_too_large refusal instead.",
             );
-            refuse(cmd, "reply_too_large");
+            refuseRead(cmd, "page_context", "reply_too_large");
             return;
           }
           if (encoded.truncated.length > 0) {
@@ -1262,8 +1264,9 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           );
           return;
         }
-        // Privacy: never click into private subtrees.
-        if (el.closest('[data-ll-private="true"], .ll-widget')) {
+        // Privacy: never click into private subtrees (data-ll-private with
+        // any value, data-ll-skip, the widget's own DOM).
+        if (el.closest(PRIVATE_SUBTREE)) {
           console.warn(
             `[LiveLayer] click: refusing to click element inside a private subtree.`,
           );
@@ -1332,7 +1335,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           );
           return;
         }
-        if (form.closest('[data-ll-private="true"], [data-ll-skip], .ll-widget')) {
+        if (form.closest(PRIVATE_SUBTREE)) {
           console.warn(
             `[LiveLayer] ${cmd.type}: refusing to touch a form in a private / opted-out subtree.`,
           );
@@ -1438,7 +1441,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           refuseSubmit(cmd, "form_not_found");
           return;
         }
-        if (form.closest('[data-ll-private="true"], [data-ll-skip], .ll-widget')) {
+        if (form.closest(PRIVATE_SUBTREE)) {
           console.warn(
             `[LiveLayer] submit_form: refusing to submit a form in a private / opted-out subtree.`,
           );
@@ -1455,31 +1458,9 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
         };
         // Collect the names of fields failing native HTML5 validation so
         // the agent can name the offending field(s) instead of guessing.
-        const fieldLabel = (el: Element): string => {
-          const e = el as HTMLInputElement;
-          const al = e.getAttribute?.("aria-label");
-          if (al) return al;
-          const id = e.id;
-          if (id) {
-            const lab = form.ownerDocument?.querySelector(`label[for="${id}"]`);
-            if (lab?.textContent?.trim()) return lab.textContent.trim();
-          }
-          return e.getAttribute?.("name") || e.id || e.type || "field";
-        };
-        const collectInvalid = (): string[] => {
-          try {
-            return Array.from(form.elements as ArrayLike<Element>)
-              .filter(
-                (el) =>
-                  "willValidate" in el &&
-                  (el as HTMLInputElement).willValidate &&
-                  !(el as HTMLInputElement).checkValidity(),
-              )
-              .map((el) => `${fieldLabel(el)}: ${(el as HTMLInputElement).validationMessage}`);
-          } catch {
-            return [];
-          }
-        };
+        // A field the agent may not see is never named (its message can
+        // quote what the visitor typed); see utils/invalidFields.
+        const collectInvalid = (): string[] => collectInvalidFields(form);
         // HTML5 pre-check: if native constraints are unmet, surface them by
         // name and do NOT submit. (For JS-only validated forms this passes
         // and the defaultPrevented check below is what catches them.)
@@ -1631,8 +1612,8 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
           // can pass the 64,000-byte packet limit; send the routes that fit.
           const encoded = encodeRoutesReply(withRequestId({ type: "routes" }, requestId), routes);
           if (!encoded) {
-            console.warn("[LiveLayer] request_routes: reply does not fit one data packet. Not sent.");
-            refuse(cmd, "reply_too_large");
+            console.warn("[LiveLayer] request_routes: reply does not fit one data packet. Answering with a reply_too_large refusal instead.");
+            refuseRead(cmd, "routes", "reply_too_large");
             return;
           }
           if (encoded.dropped > 0) {
@@ -1651,7 +1632,7 @@ const AvatarWidgetInner = forwardRef<AvatarWidgetHandle, AvatarWidgetProps>(
             console.warn("[LiveLayer] request_routes: extractRoutes threw.", err);
             if (!answered) {
               answered = true;
-              refuse(cmd, "extraction_failed");
+              refuseRead(cmd, "routes", "extraction_failed");
             }
             return;
           }

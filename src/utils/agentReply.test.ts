@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   isThenable,
+  pageReadRefusal,
+  PAGE_CONTEXT_TOO_LARGE_MESSAGE,
+  READ_PAGE_BLOCKED_MESSAGE,
   resolveReplySender,
+  ROUTES_BLOCKED_MESSAGE,
+  ROUTES_FAILED_MESSAGE,
+  SUBMIT_BLOCKED_MESSAGE,
   submitRefusal,
-  toolErrorReply,
 } from "./agentReply";
 import { MAX_DATA_PAYLOAD_BYTES } from "./dataPayload";
 
@@ -137,6 +142,8 @@ describe("resolveReplySender", () => {
   });
 });
 
+// The script-tag widget's protocol (@livelayer/sdk 0.10, page-tools/index.ts):
+// the normal reply type, plus error / capability / message.
 describe("refusal shapes", () => {
   it("answers a refused submit with form_submit_blocked, which every worker reads as not submitted", () => {
     expect(
@@ -150,31 +157,80 @@ describe("refusal shapes", () => {
     });
   });
 
-  it("keeps a submit refusal without a requestId (older workers match by type)", () => {
+  it("echoes an empty formId when the command had none, as the script tag does", () => {
+    expect(submitRefusal({ type: "submit_form", requestId: "r0" }, "missing_form_id")).toEqual({
+      type: "form_submit_blocked",
+      formId: "",
+      reason: "missing_form_id",
+      invalidFields: [],
+      requestId: "r0",
+    });
+  });
+
+  it("carries a blocked submit's message in invalidFields, which the worker prints", () => {
     expect(submitRefusal({ type: "submit_form", formId: "c" }, "capability_blocked")).toEqual({
       type: "form_submit_blocked",
       formId: "c",
       reason: "capability_blocked",
-      invalidFields: [],
+      invalidFields: [SUBMIT_BLOCKED_MESSAGE.slice(0, -1)],
+      error: "capability_blocked",
+      capability: "submit_forms",
+      message: SUBMIT_BLOCKED_MESSAGE,
     });
   });
 
-  it("builds tool_error with the request it answers", () => {
-    expect(
-      toolErrorReply({ type: "request_routes", requestId: "r2" }, "capability_blocked", {
-        capability: "read_page",
-      }),
-    ).toEqual({
-      type: "tool_error",
-      requestId: "r2",
-      command: "request_routes",
-      reason: "capability_blocked",
+  it("answers a blocked page read with page_context, the refusal repeated as its context", () => {
+    const refusal = {
+      error: "capability_blocked",
       capability: "read_page",
+      message: READ_PAGE_BLOCKED_MESSAGE,
+    };
+    expect(
+      pageReadRefusal("page_context", { type: "request_page_context", requestId: "r2" }, "capability_blocked"),
+    ).toEqual({ type: "page_context", ...refusal, context: refusal, requestId: "r2" });
+  });
+
+  it("answers a blocked routes read with an empty routes list", () => {
+    expect(
+      pageReadRefusal("routes", { type: "request_routes", requestId: "r3" }, "capability_blocked"),
+    ).toEqual({
+      type: "routes",
+      error: "capability_blocked",
+      capability: "read_page",
+      message: ROUTES_BLOCKED_MESSAGE,
+      routes: [],
+      requestId: "r3",
     });
   });
 
-  it("sends no tool_error for a command nothing waits for", () => {
-    expect(toolErrorReply({ type: "navigate", href: "/" }, "capability_blocked")).toBeNull();
+  it("names no capability when the read failed for another reason", () => {
+    expect(pageReadRefusal("page_context", { type: "request_page_context" }, "reply_too_large")).toEqual({
+      type: "page_context",
+      error: "reply_too_large",
+      message: PAGE_CONTEXT_TOO_LARGE_MESSAGE,
+      context: { error: "reply_too_large", message: PAGE_CONTEXT_TOO_LARGE_MESSAGE },
+    });
+    expect(pageReadRefusal("routes", { type: "request_routes", requestId: "r4" }, "extraction_failed")).toEqual({
+      type: "routes",
+      error: "extraction_failed",
+      message: ROUTES_FAILED_MESSAGE,
+      routes: [],
+      requestId: "r4",
+    });
+  });
+
+  it("uses the script tag's wording for the capability refusals", () => {
+    // Byte-for-byte the strings in @livelayer/sdk 0.10 page-tools/index.ts,
+    // so the agent hears the same refusal whichever widget is on the page.
+    expect(READ_PAGE_BLOCKED_MESSAGE).toBe(
+      "Reading the page is turned off on this site (its widget leaves out the read_page capability), so you can't see the visitor's screen or list its links. Don't call get_page_context or get_routes again; answer from what you already know or ask the visitor.",
+    );
+    expect(ROUTES_BLOCKED_MESSAGE).toBe(
+      "Reading the page is turned off on this site (its widget leaves out the read_page capability), so you can't list its links. Don't call get_routes or get_page_context again; use a route from your instructions if one fits, otherwise ask the visitor.",
+    );
+    expect(SUBMIT_BLOCKED_MESSAGE).toBe(
+      "Submitting forms is turned off on this site (its widget leaves out the submit_forms capability), so nothing was sent. Don't call submit_form again; tell the visitor you can't send it for them and ask them to press the form's own submit button.",
+    );
   });
 });
 

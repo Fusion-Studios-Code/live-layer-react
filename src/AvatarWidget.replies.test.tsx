@@ -13,6 +13,11 @@ import { AvatarWidget, type ControlledSession } from "./AvatarWidget";
 import { clearPageContextCache } from "./utils/extractPageContext";
 import { clearRoutesCache } from "./utils/extractRoutes";
 import { MAX_DATA_PAYLOAD_BYTES } from "./utils/dataPayload";
+import {
+  READ_PAGE_BLOCKED_MESSAGE,
+  ROUTES_BLOCKED_MESSAGE,
+  SUBMIT_BLOCKED_MESSAGE,
+} from "./utils/agentReply";
 
 type DataHandler = (msg: Record<string, unknown>) => void;
 type PublishSpy = ReturnType<typeof vi.fn>;
@@ -361,24 +366,31 @@ describe("controlled mode: replies go out through the controlled session", () =>
   });
 });
 
+// Refusals use the script-tag widget's protocol (@livelayer/sdk 0.10): the
+// request's normal reply type, plus error / capability / message.
 describe("refusals are answered, not left to time out", () => {
-  it("answers request_page_context with tool_error when read_page is not allowed", async () => {
+  it("answers request_page_context with a page_context refusal when read_page is not allowed", async () => {
     const publishData = vi.fn();
     const dispatch = renderControlled({ publishData }, { capabilities: ["navigate"] });
 
     dispatch({ type: "request_page_context", requestId: "pc-7" });
 
     await waitFor(() => expect(publishData).toHaveBeenCalledTimes(1));
-    expect(hostReplies(publishData)[0]).toEqual({
-      type: "tool_error",
-      requestId: "pc-7",
-      command: "request_page_context",
-      reason: "capability_blocked",
+    const refusal = {
+      error: "capability_blocked",
       capability: "read_page",
+      message: READ_PAGE_BLOCKED_MESSAGE,
+    };
+    expect(hostReplies(publishData)[0]).toEqual({
+      type: "page_context",
+      ...refusal,
+      // The worker hands `context` to the LLM verbatim.
+      context: refusal,
+      requestId: "pc-7",
     });
   });
 
-  it("answers request_routes with tool_error when read_page is not allowed", async () => {
+  it("answers request_routes with an empty routes refusal when read_page is not allowed", async () => {
     const publishData = vi.fn();
     const dispatch = renderControlled({ publishData }, { capabilities: ["navigate"] });
 
@@ -386,11 +398,49 @@ describe("refusals are answered, not left to time out", () => {
 
     await waitFor(() => expect(publishData).toHaveBeenCalledTimes(1));
     expect(hostReplies(publishData)[0]).toEqual({
-      type: "tool_error",
-      requestId: "rt-4",
-      command: "request_routes",
-      reason: "capability_blocked",
+      type: "routes",
+      error: "capability_blocked",
       capability: "read_page",
+      message: ROUTES_BLOCKED_MESSAGE,
+      routes: [],
+      requestId: "rt-4",
+    });
+  });
+
+  it("answers a page read that carries no requestId too", async () => {
+    // An older worker matches the reply by type alone.
+    const publishData = vi.fn();
+    const dispatch = renderControlled({ publishData }, { capabilities: ["navigate"] });
+
+    dispatch({ type: "request_routes" });
+
+    await waitFor(() => expect(publishData).toHaveBeenCalledTimes(1));
+    expect(hostReplies(publishData)[0]).toMatchObject({ type: "routes", error: "capability_blocked", routes: [] });
+    expect(hostReplies(publishData)[0]).not.toHaveProperty("requestId");
+  });
+
+  it("answers request_routes with an extraction_failed refusal when the walker throws", async () => {
+    const publishData = vi.fn();
+    const dispatch = renderControlled({ publishData });
+    // The walker reads every a[href]; make that read throw.
+    const real = Document.prototype.querySelectorAll;
+    vi.spyOn(Document.prototype, "querySelectorAll").mockImplementation(function (
+      this: Document,
+      sel: string,
+    ) {
+      if (sel === "a[href]") throw new Error("walker broke");
+      return real.call(this, sel);
+    } as typeof real);
+
+    dispatch({ type: "request_routes", requestId: "rt-7" });
+
+    await waitFor(() => expect(publishData).toHaveBeenCalledTimes(1));
+    expect(hostReplies(publishData)[0]).toEqual({
+      type: "routes",
+      error: "extraction_failed",
+      message: expect.stringContaining("links could not be read"),
+      routes: [],
+      requestId: "rt-7",
     });
   });
 
@@ -408,7 +458,12 @@ describe("refusals are answered, not left to time out", () => {
       type: "form_submit_blocked",
       formId: "contact",
       reason: "capability_blocked",
-      invalidFields: [],
+      // The worker prints invalidFields (not `message`) to the LLM, and
+      // adds the final period.
+      invalidFields: [SUBMIT_BLOCKED_MESSAGE.slice(0, -1)],
+      error: "capability_blocked",
+      capability: "submit_forms",
+      message: SUBMIT_BLOCKED_MESSAGE,
       requestId: "sf-2",
     });
     expect(submitted).not.toHaveBeenCalled();
@@ -442,6 +497,7 @@ describe("refusals are answered, not left to time out", () => {
     await waitFor(() => expect(publishData).toHaveBeenCalledTimes(1));
     expect(hostReplies(publishData)[0]).toEqual({
       type: "form_submit_blocked",
+      formId: "",
       reason: "missing_form_id",
       invalidFields: [],
       requestId: "sf-4",
@@ -545,6 +601,20 @@ describe("refusals are answered, not left to time out", () => {
     expect(hostReplies(publishData)[0].type).toBe("routes");
   });
 
+  it("does not answer a blocked fire-and-forget command even when it carries a requestId", async () => {
+    // It has no reply type to answer with (tool_error is gone: no worker
+    // read it), and the worker never waits on these commands.
+    const publishData = vi.fn();
+    const dispatch = renderControlled({ publishData }, { capabilities: ["read_page"] });
+
+    dispatch({ type: "navigate", href: "/plans", requestId: "nv-1" });
+    dispatch({ type: "click", selector: "a", requestId: "ck-1" });
+    dispatch({ type: "request_routes", requestId: "rt-8" });
+
+    await waitFor(() => expect(publishData).toHaveBeenCalledTimes(1));
+    expect(hostReplies(publishData).map((r) => [r.type, r.requestId])).toEqual([["routes", "rt-8"]]);
+  });
+
   it("answers a refusal on the internal session's Room when the widget is not controlled", async () => {
     render(<AvatarWidget agentId="test-agent" soundEffects={false} capabilities={["navigate"]} />);
 
@@ -556,9 +626,10 @@ describe("refusals are answered, not left to time out", () => {
     const [data, opts] = vi.mocked(internal.publishData!).mock.calls[0];
     expect(opts).toEqual({ reliable: true });
     expect(decode(data)).toMatchObject({
-      type: "tool_error",
+      type: "page_context",
       requestId: "pc-8",
-      reason: "capability_blocked",
+      error: "capability_blocked",
+      capability: "read_page",
     });
   });
 });

@@ -104,8 +104,11 @@ export interface FlowContext {
  * Snapshot of what the user is currently looking at, sent to the agent in
  * response to a `request_page_context` command.
  *
- * Form values, password inputs, and elements marked `data-ll-private="true"`
- * are NEVER included. See README → Privacy.
+ * Form values, password / `autocomplete="off"` / `autocomplete="cc-*"`
+ * inputs, and anything inside `[data-ll-private]` (any value),
+ * `[data-ll-skip]` or the widget itself are NEVER included, including a
+ * private element nested inside an ordinary paragraph, heading, link,
+ * label or region. See README → Privacy.
  */
 export interface PageContext {
   /** Full URL at the moment the snapshot was taken. */

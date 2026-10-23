@@ -17,16 +17,30 @@
 //     the widget already uses for sendData and typed messages.
 // Either way the reply is the same JSON, held to MAX_DATA_PAYLOAD_BYTES.
 //
-// Refusals:
-//   - submit_form answers with `form_submit_blocked` and a refusal reason
-//     (see SubmitRefusalReason). The worker already reads that reply as
-//     "the form did NOT submit", so it answers at once instead of waiting
-//     out the 6 s and calling the outcome unknown.
-//   - Every other request answers with
-//     `{ type: "tool_error", requestId, command, reason }`. Workers that
-//     do not read `tool_error` yet ignore it, so it costs them nothing.
-//     A command without a `requestId` (navigate, fill_form and the other
-//     fire-and-forget commands) is not answered: nothing waits for it.
+// Refusals: the same protocol as the script-tag widget (@livelayer/sdk
+// 0.10, src/page-tools/index.ts, live-layer-sdk#4), so the worker reads
+// one shape whichever widget is on the page. A refused request is
+// answered with its NORMAL reply type, plus
+//
+//   error:      why (ReplyError): "capability_blocked" when the host's
+//               `capabilities` leave the capability out; this widget
+//               also sends "reply_too_large" / "extraction_failed"
+//   capability: the capability left out (capability_blocked only)
+//   message:    a sentence for the LLM: what happened, and what to do
+//
+//   page_context: the refusal is repeated inside `context`, because the
+//                 worker hands `context` to the LLM verbatim.
+//   routes:       `routes: []`.
+//   submit:       type form_submit_blocked with `reason` (see
+//                 SubmitRefusalReason) and `invalidFields: []`; for
+//                 capability_blocked the message is also the one
+//                 invalidFields entry, which the worker prints ("Invalid
+//                 field(s): …"), plus error / capability / message.
+//
+// Every worker already accepts these types, so a refusal resolves its
+// wait at once instead of after 2 s / 6 s. Only these three requests are
+// answered: navigate, fill_form and the other fire-and-forget commands
+// have no reply type, and nothing waits for them.
 
 import {
   MAX_DATA_PAYLOAD_BYTES,
@@ -67,14 +81,47 @@ export type SubmitRefusalReason =
    */
   | "form_private";
 
-/** Why the widget answered a request with `tool_error`. */
-export type ToolErrorReason =
+/** The `error` of a refused page read (page_context / routes). */
+export type ReplyError =
   /** The host's `capabilities` prop does not include the capability. */
   | "capability_blocked"
   /** Not even a minimal reply fits one data packet. */
   | "reply_too_large"
   /** Reading the page threw; there is nothing to send. */
   | "extraction_failed";
+
+/** `error` of a reply refused because of the host's capability allowlist. */
+export const CAPABILITY_BLOCKED = "capability_blocked";
+
+// LLM-facing. Same wording as @livelayer/sdk 0.10 (page-tools/index.ts).
+export const READ_PAGE_BLOCKED_MESSAGE =
+  "Reading the page is turned off on this site (its widget leaves out the read_page capability), so you can't see the visitor's screen or list its links. " +
+  "Don't call get_page_context or get_routes again; answer from what you already know or ask the visitor.";
+
+export const ROUTES_BLOCKED_MESSAGE =
+  "Reading the page is turned off on this site (its widget leaves out the read_page capability), so you can't list its links. " +
+  "Don't call get_routes or get_page_context again; use a route from your instructions if one fits, otherwise ask the visitor.";
+
+export const SUBMIT_BLOCKED_MESSAGE =
+  "Submitting forms is turned off on this site (its widget leaves out the submit_forms capability), so nothing was sent. " +
+  "Don't call submit_form again; tell the visitor you can't send it for them and ask them to press the form's own submit button.";
+
+// React only (the script tag sends nothing / an empty list here).
+export const PAGE_CONTEXT_TOO_LARGE_MESSAGE =
+  "The visitor's page is too large to send in one message, even after trimming, so you can't see it this time. " +
+  "Answer from what you already know or ask the visitor.";
+
+export const ROUTES_TOO_LARGE_MESSAGE =
+  "The page's link list is too large to send in one message, so you can't list its links this time. " +
+  "Use a route from your instructions if one fits, otherwise ask the visitor.";
+
+export const PAGE_CONTEXT_FAILED_MESSAGE =
+  "The visitor's page could not be read this time. " +
+  "Answer from what you already know or ask the visitor.";
+
+export const ROUTES_FAILED_MESSAGE =
+  "The page's links could not be read this time. " +
+  "Use a route from your instructions if one fits, otherwise ask the visitor.";
 
 const decoder = new TextDecoder();
 
@@ -170,36 +217,70 @@ export function requestIdOf(cmd: Readonly<Record<string, unknown>>): string | un
 }
 
 /**
- * The answer to a submit_form the widget will not carry out. Same shape as
+ * The answer to a submit_form the widget will not carry out. Same type as
  * a validation block, so every worker reads it as "did not submit".
+ * `formId` echoes the command's ("" when it had none), as the script tag
+ * does.
  */
 export function submitRefusal(
   cmd: Readonly<Record<string, unknown>>,
   reason: SubmitRefusalReason,
 ): Record<string, unknown> {
-  return withRequestId(
-    {
-      type: "form_submit_blocked",
-      ...(typeof cmd.formId === "string" ? { formId: cmd.formId } : {}),
-      reason,
-      invalidFields: [],
-    },
-    requestIdOf(cmd),
-  );
+  const formId = typeof cmd.formId === "string" ? cmd.formId : "";
+  const reply =
+    reason === CAPABILITY_BLOCKED
+      ? {
+          type: "form_submit_blocked",
+          formId,
+          reason,
+          // The worker prints invalidFields but not `message` (live-layer
+          // ec34f9b3), so the refusal rides there too. It adds the period.
+          invalidFields: [SUBMIT_BLOCKED_MESSAGE.replace(/\.$/, "")],
+          error: CAPABILITY_BLOCKED,
+          capability: "submit_forms",
+          message: SUBMIT_BLOCKED_MESSAGE,
+        }
+      : { type: "form_submit_blocked", formId, reason, invalidFields: [] };
+  return withRequestId(reply, requestIdOf(cmd));
 }
 
+/** The reply types of the two page reads (request_page_context, request_routes). */
+export type PageReadReply = "page_context" | "routes";
+
+const PAGE_READ_MESSAGES: Readonly<Record<PageReadReply, Readonly<Record<ReplyError, string>>>> = {
+  page_context: {
+    capability_blocked: READ_PAGE_BLOCKED_MESSAGE,
+    reply_too_large: PAGE_CONTEXT_TOO_LARGE_MESSAGE,
+    extraction_failed: PAGE_CONTEXT_FAILED_MESSAGE,
+  },
+  routes: {
+    capability_blocked: ROUTES_BLOCKED_MESSAGE,
+    reply_too_large: ROUTES_TOO_LARGE_MESSAGE,
+    extraction_failed: ROUTES_FAILED_MESSAGE,
+  },
+};
+
 /**
- * The `tool_error` answer to a request the widget will not or cannot
- * serve, or null when the command has no requestId (nothing waits for it).
+ * The answer to a page read the widget will not or cannot serve: its
+ * normal reply type (`page_context` / `routes`) with error, capability
+ * (capability_blocked only) and message. A page_context repeats the
+ * refusal as its `context`; routes is `[]`.
  */
-export function toolErrorReply(
-  cmd: Readonly<{ type: string } & Record<string, unknown>>,
-  reason: ToolErrorReason,
-  extra: Record<string, unknown> = {},
-): Record<string, unknown> | null {
-  const requestId = requestIdOf(cmd);
-  if (!requestId) return null;
-  return { type: "tool_error", requestId, command: cmd.type, reason, ...extra };
+export function pageReadRefusal(
+  type: PageReadReply,
+  cmd: Readonly<Record<string, unknown>>,
+  error: ReplyError,
+): Record<string, unknown> {
+  const refusal = {
+    error,
+    ...(error === CAPABILITY_BLOCKED ? { capability: "read_page" } : {}),
+    message: PAGE_READ_MESSAGES[type][error],
+  };
+  const reply =
+    type === "page_context"
+      ? { type, ...refusal, context: refusal }
+      : { type, ...refusal, routes: [] };
+  return withRequestId(reply, requestIdOf(cmd));
 }
 
 /** True for a Promise or any other thenable (another realm's Promise, a polyfill). */

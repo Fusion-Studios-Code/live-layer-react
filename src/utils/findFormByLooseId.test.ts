@@ -47,6 +47,32 @@ describe("findFormByLooseId — off-limits exclusion + single-form fallback", ()
     expect(findFormByLooseId(document, "privately")).toBeNull();
   });
 
+  it("excludes a form inside a bare data-ll-private, or carrying one itself", () => {
+    // Any data-ll-private value opts out, as in extractPageContext.
+    document.body.innerHTML = `
+      <div data-ll-private><form id="wrapped" name="wrapped-name" data-ll-intent="Wrapped intent"></form></div>
+      <form id="own" data-ll-private></form>
+      <form id="contact"><input name="email" /></form>
+    `;
+    for (const id of ["wrapped", "wrapped-name", "Wrapped intent", "wrapped-intent", "own"]) {
+      expect(findFormByLooseId(document, id)).toBeNull();
+    }
+  });
+
+  it("counts positional form_N ids over the same forms extractPageContext lists", () => {
+    // extractPageContext skips a form in any private subtree, so the public
+    // unnamed form below is its form_0.
+    document.body.innerHTML = `
+      <div data-ll-private><form><input name="a" /></form></div>
+      <form data-ll-private><input name="b" /></form>
+      <form><input name="c" /></form>
+      <form><input name="d" /></form>
+    `;
+    const forms = Array.from(document.querySelectorAll("form"));
+    expect(findFormByLooseId(document, "form_0")).toBe(forms[2]);
+    expect(findFormByLooseId(document, "form_1")).toBe(forms[3]);
+  });
+
   it("does NOT single-form-fallback when multiple fillable forms exist (stays ambiguous)", () => {
     document.body.innerHTML = `<form id="a"></form><form id="b"></form>`;
     expect(findFormByLooseId(document, "nope")).toBeNull();
